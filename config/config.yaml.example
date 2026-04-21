@@ -23,14 +23,21 @@ runtime:
   done_flag_name: .done
   fail_fast: false
 
+
+qc:
+  coverage_method: sampled_windows
+  n_windows: 200
+  window_size: 100000
+  include_chroms: [chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chr20,chr21,chr22,chrX,chrY]
+
 modules:
   input_check:
     enabled: true
     tool_hint: "python + samtools"
     slurm:
       partition: cpu1
-      cpus_per_task: 2
-      mem: 8G
+      cpus_per_task: 1
+      mem: 4G
       time: "02:00:00"
       job_name: input_check
       stdout: logs/input_check/%j.out
@@ -54,7 +61,7 @@ modules:
     slurm:
       partition: cpu1
       cpus_per_task: 8
-      mem: 48G
+      mem: 32G
       time: "12:00:00"
       job_name: ascat_prepare
       stdout: logs/ascat_prepare/%A_%a.out
@@ -65,8 +72,8 @@ modules:
     is_array: true
     slurm:
       partition: cpu1
-      cpus_per_task: 8
-      mem: 64G
+      cpus_per_task: 4
+      mem: 16G
       time: "12:00:00"
       job_name: ascat_run
       stdout: logs/ascat/%A_%a.out
@@ -78,7 +85,7 @@ modules:
     slurm:
       partition: cpu1
       cpus_per_task: 8
-      mem: 48G
+      mem: 32G
       time: "10:00:00"
       job_name: sv_manta
       stdout: logs/manta/%A_%a.out
@@ -89,8 +96,8 @@ modules:
     is_array: true
     slurm:
       partition: cpu2
-      cpus_per_task: 24
-      mem: 192G
+      cpus_per_task: 16
+      mem: 64G
       time: "24:00:00"
       job_name: sv_gridss
       stdout: logs/gridss/%A_%a.out
@@ -101,8 +108,8 @@ modules:
     is_array: true
     slurm:
       partition: cpu1
-      cpus_per_task: 4
-      mem: 16G
+      cpus_per_task: 2
+      mem: 8G
       time: "04:00:00"
       job_name: sv_postfilter
       stdout: logs/sv_postfilter/%A_%a.out
@@ -113,8 +120,8 @@ modules:
     is_array: true
     slurm:
       partition: cpu1
-      cpus_per_task: 4
-      mem: 16G
+      cpus_per_task: 2
+      mem: 8G
       time: "02:00:00"
       job_name: sv_merge
       stdout: logs/sv_merge/%A_%a.out
@@ -125,8 +132,8 @@ modules:
     is_array: true
     slurm:
       partition: cpu1
-      cpus_per_task: 4
-      mem: 16G
+      cpus_per_task: 2
+      mem: 8G
       time: "04:00:00"
       job_name: sv_annot
       stdout: logs/sv_annotation/%A_%a.out
@@ -137,7 +144,7 @@ modules:
     slurm:
       partition: cpu1
       cpus_per_task: 4
-      mem: 24G
+      mem: 16G
       time: "04:00:00"
       job_name: cohort_summary
       stdout: logs/cohort_summary/%j.out
@@ -147,8 +154,8 @@ modules:
     enabled: true
     slurm:
       partition: cpu1
-      cpus_per_task: 4
-      mem: 16G
+      cpus_per_task: 2
+      mem: 8G
       time: "04:00:00"
       job_name: group_compare
       stdout: logs/group_compare/%j.out
@@ -159,8 +166,8 @@ modules:
     is_array: true
     slurm:
       partition: cpu1
-      cpus_per_task: 4
-      mem: 16G
+      cpus_per_task: 2
+      mem: 8G
       time: "04:00:00"
       job_name: hpv_link
       stdout: logs/hpv_link/%A_%a.out
@@ -170,8 +177,8 @@ modules:
     enabled: true
     slurm:
       partition: cpu1
-      cpus_per_task: 2
-      mem: 8G
+      cpus_per_task: 1
+      mem: 4G
       time: "02:00:00"
       job_name: final_report
       stdout: logs/report/%j.out
@@ -191,6 +198,15 @@ modules:
 hpv_link:
   windows_bp: [10000, 100000, 1000000]
   chromosome_prefix_style: chr
+
+ascat_prepare:
+  max_sites: 50000
+  site_bed: ""
+  min_normal_depth: 12
+  min_tumor_depth: 8
+  include_chroms: [chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chr20,chr21,chr22,chrX,chrY]
+  normal_het_min_baf: 0.30
+  normal_het_max_baf: 0.70
 
 software:
   samtools: samtools
