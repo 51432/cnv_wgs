@@ -1,12 +1,34 @@
 #!/usr/bin/env bash
-HPV_BREAKPOINTS="$1"
-ASCAT_DIR="$2"
-SV_ANNOT_DIR="$3"
-OUTDIR="$4"
+PAIR_TSV="$1"
+HPV_BREAKPOINTS="$2"
+ASCAT_DIR="$3"
+SV_ANNOT_DIR="$4"
+OUTDIR="$5"
+TASK_ID="${SLURM_ARRAY_TASK_ID:-$6}"
+SKIP_DONE="${SKIP_DONE:-true}"
+
 source "$(dirname "$0")/../lib/common.sh"
 ensure_log_dirs
-ensure_dir "$OUTDIR"
-python3 "$(dirname "$0")/../python/hpv_link.py" --hpv-breakpoints "$HPV_BREAKPOINTS" --ascat-dir "$ASCAT_DIR" --sv-annot-dir "$SV_ANNOT_DIR" --outdir "$OUTDIR"
+
+row=$(get_pair_by_task_id "$PAIR_TSV" "$TASK_ID")
+sample_id=$(echo "$row" | cut -f1)
+sample_out="$OUTDIR/$sample_id"
+ensure_dir "$sample_out"
+
+if [ "$SKIP_DONE" = "true" ] && is_done "$sample_out/.done"; then
+  echo "[hpv_link] skip $sample_id"
+  exit 0
+fi
+
+python3 "$(dirname "$0")/../python/hpv_link.py" \
+  --sample-id "$sample_id" \
+  --hpv-breakpoints "$HPV_BREAKPOINTS" \
+  --ascat-dir "$ASCAT_DIR/$sample_id" \
+  --sv-annot-tsv "$SV_ANNOT_DIR/$sample_id/annotated.sv.tsv" \
+  --outdir "$sample_out"
 rc=$?
-if [ $rc -ne 0 ]; then exit $rc; fi
-mark_done "$OUTDIR/.done" "module=hpv_link"
+if [ $rc -ne 0 ]; then
+  exit $rc
+fi
+
+mark_done "$sample_out/.done" "module=hpv_link" "sample_id=$sample_id"

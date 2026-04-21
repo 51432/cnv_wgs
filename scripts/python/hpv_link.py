@@ -13,33 +13,37 @@ def parse_breakpoint_line(line: str):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument('--sample-id', required=True)
     ap.add_argument('--hpv-breakpoints', required=True)
     ap.add_argument('--ascat-dir', required=True)
-    ap.add_argument('--sv-annot-dir', required=True)
+    ap.add_argument('--sv-annot-tsv', required=True)
     ap.add_argument('--outdir', required=True)
     args = ap.parse_args()
-    outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
+    outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
 
-    cn = outdir / 'hpv_cn_link.per_sample.tsv'
-    sv = outdir / 'hpv_sv_link.per_sample.tsv'
-    summary = outdir / 'hpv_link.cohort_summary.tsv'
+    cn = outdir / 'hpv_cn_link.tsv'
+    sv = outdir / 'hpv_sv_link.tsv'
+    summary = outdir / 'hpv_link.summary.tsv'
 
-    with open(args.hpv_breakpoints) as fh, cn.open('w') as fcn, sv.open('w') as fsv:
-        fcn.write('sample_id\thost_chr\thost_pos\twindow_bp\tn_cn_breakpoints\n')
-        fsv.write('sample_id\thost_chr\thost_pos\twindow_bp\tn_sv_breakpoints\n')
-        for idx, line in enumerate(fh, start=1):
+    cn_rows = []
+    sv_rows = []
+    with open(args.hpv_breakpoints) as fh:
+        for line in fh:
             line = line.strip()
             if not line:
                 continue
             ch, pos = parse_breakpoint_line(line)
-            sample_id = f'HPV_EVENT_{idx}'
             if ch is None:
                 continue
             for w in (10000, 100000, 1000000):
-                fcn.write(f'{sample_id}\t{ch}\t{pos}\t{w}\tNA\n')
-                fsv.write(f'{sample_id}\t{ch}\t{pos}\t{w}\tNA\n')
+                cn_rows.append(f'{args.sample_id}\t{ch}\t{pos}\t{w}\tNA')
+                sv_rows.append(f'{args.sample_id}\t{ch}\t{pos}\t{w}\tNA')
 
-    summary.write_text('metric\tvalue\nparsed_events\tNA\n')
+    cn.write_text('sample_id\thost_chr\thost_pos\twindow_bp\tn_cn_breakpoints\n' + ('\n'.join(cn_rows) + '\n' if cn_rows else ''))
+    sv.write_text('sample_id\thost_chr\thost_pos\twindow_bp\tn_sv_breakpoints\n' + ('\n'.join(sv_rows) + '\n' if sv_rows else ''))
+    summary.write_text('sample_id\tparsed_events\n%s\t%d\n' % (args.sample_id, len(cn_rows) // 3 if cn_rows else 0))
+
 
 if __name__ == '__main__':
     main()
