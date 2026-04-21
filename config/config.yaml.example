@@ -1,0 +1,200 @@
+project:
+  name: sccc_tumor_normal_wgs
+  root_dir: /path/to/project
+  outdir: /path/to/project/results
+  temp_dir: /path/to/project/tmp
+
+inputs:
+  pairbam_tsv: /path/to/project/examples/pairbam.example.tsv
+  group_tsv: /path/to/project/examples/group.example.tsv
+  hpv_breakpoints_tsv: /path/to/project/examples/hpv_breakpoints.example.tsv
+
+reference:
+  genome_fasta: /data/person/wup/public/liusy_files/reference_genomes/hg38/reference/Homo_sapiens_assembly38.fasta
+  snp_vcf: /data/person/wup/public/liusy_files/reference_genomes/hg38/resources/1000G_phase1.snps.high_confidence.hg38.vcf.gz
+  accessible_bed: /data/person/wup/public/liusy_files/reference_genomes/hg38/resources/access.hg38.bed
+
+parallel:
+  max_parallel_default: 2
+
+runtime:
+  skip_done: true
+  create_done_flag: true
+  done_flag_name: .done
+  fail_fast: false
+
+modules:
+  input_check:
+    enabled: true
+    tool_hint: "python + samtools"
+    slurm:
+      partition: cpu1
+      cpus_per_task: 2
+      mem: 8G
+      time: "02:00:00"
+      job_name: input_check
+      stdout: logs/input_check/%j.out
+      stderr: logs/input_check/%j.err
+
+  soft_qc:
+    enabled: true
+    is_array: true
+    slurm:
+      partition: cpu1
+      cpus_per_task: 4
+      mem: 16G
+      time: "04:00:00"
+      job_name: soft_qc
+      stdout: logs/soft_qc/%A_%a.out
+      stderr: logs/soft_qc/%A_%a.err
+
+  ascat_prepare:
+    enabled: true
+    is_array: true
+    slurm:
+      partition: cpu1
+      cpus_per_task: 8
+      mem: 48G
+      time: "12:00:00"
+      job_name: ascat_prepare
+      stdout: logs/ascat_prepare/%A_%a.out
+      stderr: logs/ascat_prepare/%A_%a.err
+
+  ascat_run:
+    enabled: true
+    is_array: true
+    slurm:
+      partition: cpu1
+      cpus_per_task: 8
+      mem: 64G
+      time: "12:00:00"
+      job_name: ascat_run
+      stdout: logs/ascat/%A_%a.out
+      stderr: logs/ascat/%A_%a.err
+
+  sv_call_manta:
+    enabled: true
+    is_array: true
+    slurm:
+      partition: cpu1
+      cpus_per_task: 8
+      mem: 48G
+      time: "10:00:00"
+      job_name: sv_manta
+      stdout: logs/manta/%A_%a.out
+      stderr: logs/manta/%A_%a.err
+
+  sv_call_gridss:
+    enabled: true
+    is_array: true
+    slurm:
+      partition: cpu2
+      cpus_per_task: 24
+      mem: 192G
+      time: "24:00:00"
+      job_name: sv_gridss
+      stdout: logs/gridss/%A_%a.out
+      stderr: logs/gridss/%A_%a.err
+
+  sv_postfilter:
+    enabled: true
+    is_array: true
+    slurm:
+      partition: cpu1
+      cpus_per_task: 4
+      mem: 16G
+      time: "04:00:00"
+      job_name: sv_postfilter
+      stdout: logs/sv_postfilter/%A_%a.out
+      stderr: logs/sv_postfilter/%A_%a.err
+
+  sv_merge:
+    enabled: true
+    slurm:
+      partition: cpu1
+      cpus_per_task: 4
+      mem: 16G
+      time: "02:00:00"
+      job_name: sv_merge
+      stdout: logs/sv_merge/%j.out
+      stderr: logs/sv_merge/%j.err
+
+  sv_annotation:
+    enabled: true
+    slurm:
+      partition: cpu1
+      cpus_per_task: 4
+      mem: 16G
+      time: "04:00:00"
+      job_name: sv_annot
+      stdout: logs/sv_annotation/%j.out
+      stderr: logs/sv_annotation/%j.err
+
+  cohort_summary:
+    enabled: true
+    slurm:
+      partition: cpu1
+      cpus_per_task: 4
+      mem: 24G
+      time: "04:00:00"
+      job_name: cohort_summary
+      stdout: logs/cohort_summary/%j.out
+      stderr: logs/cohort_summary/%j.err
+
+  group_compare:
+    enabled: true
+    slurm:
+      partition: cpu1
+      cpus_per_task: 4
+      mem: 16G
+      time: "04:00:00"
+      job_name: group_compare
+      stdout: logs/group_compare/%j.out
+      stderr: logs/group_compare/%j.err
+
+  hpv_link:
+    enabled: true
+    slurm:
+      partition: cpu1
+      cpus_per_task: 4
+      mem: 16G
+      time: "04:00:00"
+      job_name: hpv_link
+      stdout: logs/hpv_link/%j.out
+      stderr: logs/hpv_link/%j.err
+
+  final_report:
+    enabled: true
+    slurm:
+      partition: cpu1
+      cpus_per_task: 2
+      mem: 8G
+      time: "02:00:00"
+      job_name: final_report
+      stdout: logs/report/%j.out
+      stderr: logs/report/%j.err
+
+  snv_indel_hook:
+    enabled: false
+    slurm:
+      partition: cpu1
+      cpus_per_task: 4
+      mem: 16G
+      time: "04:00:00"
+      job_name: snv_indel_hook
+      stdout: logs/snv_indel_hook/%j.out
+      stderr: logs/snv_indel_hook/%j.err
+
+hpv_link:
+  windows_bp: [10000, 100000, 1000000]
+  chromosome_prefix_style: chr
+
+software:
+  samtools: samtools
+  bcftools: bcftools
+  bedtools: bedtools
+  python: python3
+  Rscript: Rscript
+  manta_config: configManta.py
+  gridss: gridss
+  tabix: tabix

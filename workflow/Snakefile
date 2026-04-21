@@ -1,0 +1,7 @@
+configfile: "config/config.yaml"
+
+rule all:
+    input:
+        "results/final_report/final_report.md"
+
+# 第一版先使用 scripts/modules + sbatch；该 Snakefile 预留后续迁移。
