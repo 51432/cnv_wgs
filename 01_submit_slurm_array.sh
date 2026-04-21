@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 
 PAIRS="examples/pairbam.example.tsv"
-GROUP="examples/group.example.tsv"
+GROUP=""
 HPV="examples/hpv_breakpoints.example.tsv"
 RESULTS_DIR="results"
 MAX_PARALLEL=2
-ENABLE_ANNOTATION=1
 CONFIG="config/config.yaml.example"
 PHASE="all"
 START_STAGE=""
@@ -28,7 +27,6 @@ Usage:
     --end-stage final_report \
     --max-parallel 2 \
     --max-parallel-stage sv_call_gridss=1 \
-    --enable-annotation 0|1 \
     --skip-input-check 0|1 \
     --config config/config.yaml
 
@@ -37,7 +35,7 @@ Phase:
   sample:   soft_qc, ascat_prepare, ascat_run, sv_call_manta, sv_call_gridss,
             sv_postfilter, sv_merge, sv_annotation, hpv_link
   cohort:   cohort_summary, group_compare, final_report
-  all:      full DAG
+  all:      full DAG (group.tsv 缺失时自动跳过 cohort 部分)
 EOF
 }
 
@@ -52,7 +50,6 @@ while [ $# -gt 0 ]; do
     --max-parallel-stage) STAGE_PARALLEL_ARGS+=("$2"); shift 2 ;;
     --start-stage) START_STAGE="$2"; shift 2 ;;
     --end-stage) END_STAGE="$2"; shift 2 ;;
-    --enable-annotation) ENABLE_ANNOTATION="$2"; shift 2 ;;
     --skip-input-check) SKIP_INPUT_CHECK="$2"; shift 2 ;;
     --config) CONFIG="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -80,6 +77,20 @@ if [ "$N" -lt 1 ]; then
   exit 1
 fi
 
+GROUP_EXISTS=0
+GROUP_VALID_COLS=0
+if [ -n "$GROUP" ] && [ -f "$GROUP" ]; then
+  GROUP_EXISTS=1
+  header=$(head -n 1 "$GROUP")
+  ncol=$(echo "$header" | awk -F'\t' '{print NF}')
+  if [ "$ncol" -gt 1 ]; then
+    valid=$(echo "$header" | awk -F'\t' '{for(i=2;i<=NF;i++){if($i!=""){c++}}} END{print c+0}')
+    if [ "$valid" -gt 0 ]; then
+      GROUP_VALID_COLS=1
+    fi
+  fi
+fi
+
 all_stages=(input_check soft_qc ascat_prepare ascat_run sv_call_manta sv_call_gridss sv_postfilter sv_merge sv_annotation hpv_link cohort_summary group_compare final_report)
 phase_precheck=(input_check)
 phase_sample=(soft_qc ascat_prepare ascat_run sv_call_manta sv_call_gridss sv_postfilter sv_merge sv_annotation hpv_link)
@@ -90,6 +101,10 @@ if [ "$PHASE" = "precheck" ]; then
 elif [ "$PHASE" = "sample" ]; then
   base=("${phase_sample[@]}")
 elif [ "$PHASE" = "cohort" ]; then
+  if [ "$GROUP_EXISTS" -ne 1 ]; then
+    echo "[error] --phase cohort requires existing --group file"
+    exit 1
+  fi
   base=("${phase_cohort[@]}")
 else
   base=("${all_stages[@]}")
@@ -112,6 +127,19 @@ done
 if [ ${#selected[@]} -eq 0 ]; then
   echo "[error] invalid stage window for phase=$PHASE start=$START_STAGE end=$END_STAGE"
   exit 1
+fi
+
+# group 缺失时的 cohort 逻辑：all 阶段自动跳过 cohort 模块
+if [ "$PHASE" = "all" ] && [ "$GROUP_EXISTS" -ne 1 ]; then
+  echo "[warn] group.tsv missing: skip cohort_summary/group_compare/final_report, run precheck+sample only"
+  filtered=()
+  for s in "${selected[@]}"; do
+    if [ "$s" = "cohort_summary" ] || [ "$s" = "group_compare" ] || [ "$s" = "final_report" ]; then
+      continue
+    fi
+    filtered+=("$s")
+  done
+  selected=("${filtered[@]}")
 fi
 
 declare -A STAGE_PARALLEL
@@ -211,13 +239,9 @@ if has_stage sv_merge; then
 fi
 
 if has_stage sv_annotation; then
-  if [ "$ENABLE_ANNOTATION" = "1" ]; then
-    p=$(stage_parallel sv_annotation)
-    d=$(dep_join "$after_input" "${JOBID[sv_merge]}" "${JOBID[ascat_run]}")
-    submit_stage sv_annotation "--array=1-$N%$p slurm/sv_annotation.sbatch $PAIRS $RESULTS_DIR/sv/merged $RESULTS_DIR/ascat $HPV $RESULTS_DIR/sv/annotation" "$d"
-  else
-    echo "[skip] sv_annotation (enable-annotation=0)"
-  fi
+  p=$(stage_parallel sv_annotation)
+  d=$(dep_join "$after_input" "${JOBID[sv_merge]}" "${JOBID[ascat_run]}")
+  submit_stage sv_annotation "--array=1-$N%$p slurm/sv_annotation.sbatch $PAIRS $RESULTS_DIR/sv/merged $RESULTS_DIR/ascat $HPV $RESULTS_DIR/sv/annotation" "$d"
 fi
 
 if has_stage hpv_link; then
@@ -236,14 +260,14 @@ if has_stage cohort_summary; then
 fi
 
 if has_stage group_compare; then
-  if [ -f "$GROUP" ]; then
+  if [ "$GROUP_EXISTS" -eq 1 ] && [ "$GROUP_VALID_COLS" -eq 1 ]; then
     d=$(dep_join "$after_input" "${JOBID[cohort_summary]}")
     if has_stage hpv_link; then
       d=$(dep_join "$d" "${JOBID[hpv_link]}")
     fi
     submit_stage group_compare "slurm/group_compare.sbatch $GROUP $RESULTS_DIR/cohort $RESULTS_DIR/group_compare" "$d"
   else
-    echo "[auto-skip] group_compare (missing group.tsv: $GROUP)"
+    echo "[auto-skip] group_compare (group.tsv missing or no valid group columns besides sample_id)"
   fi
 fi
 

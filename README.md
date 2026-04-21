@@ -177,6 +177,8 @@ ID=0 chr15:-46006922 HPV39REF|lcl|Human:-6786 SUPPORTING_PAIRS=10 SPLIT_READS=0
 - `group_compare`（依赖 `cohort_summary`；若比较 HPV linked 指标可附加 `hpv_link`；无 group 文件自动跳过）
 - `final_report`（依赖 `cohort_summary + soft_qc`；若存在 group/hpv 结果则纳入）
 
+> 说明：本流程不再提供 `--enable-annotation`。`sv_annotation` 是主流程必需阶段。
+
 ---
 
 ## 7. 各模块详细说明
@@ -275,6 +277,17 @@ ID=0 chr15:-46006922 HPV39REF|lcl|Human:-6786 SUPPORTING_PAIRS=10 SPLIT_READS=0
 - array：否
 
 ---
+
+
+
+### Group 驱动的 cohort 行为
+
+- `group.tsv` 存在：允许 `cohort_summary`，若存在有效分组列（除 `sample_id` 外）则运行 `group_compare`，`final_report` 可生成完整 cohort 报告。
+- `group.tsv` 不存在：
+  - `--phase cohort`：直接报错退出。
+  - `--phase all`：自动跳过 `cohort_summary/group_compare/final_report`，仅运行 precheck + sample，并给 warning。
+  - `--phase sample`：不要求 `group.tsv`。
+- 若 `group.tsv` 仅有 `sample_id` 而无有效分组列：跳过 `group_compare`，但 `cohort_summary` 与 `final_report` 仍执行。
 
 ## 8. SLURM 运行方式
 
