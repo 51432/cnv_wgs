@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #SBATCH --partition=cpu1
-#SBATCH --cpus-per-task=2
-#SBATCH --mem=8G
-#SBATCH --time=02:00:00
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4G
+#SBATCH --time=00:30:00
 #SBATCH --job-name=final_report
 #SBATCH --output=logs/report/%j.out
 #SBATCH --error=logs/report/%j.err

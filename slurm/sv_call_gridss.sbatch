@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --partition=cpu2
-#SBATCH --cpus-per-task=24
-#SBATCH --mem=192G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
 #SBATCH --time=24:00:00
 #SBATCH --job-name=sv_gridss
 #SBATCH --output=logs/gridss/%A_%a.out

@@ -370,6 +370,22 @@ bash 01_submit_slurm_array.sh \
 - `cpu1`：常规模块（soft_qc、ascat_prepare/run、manta、postfilter、summary）。
 - `cpu2`：重计算模块（gridss）。
 
+### 当前推荐资源配额（与示例配置一致）
+
+- `input_check`: `cpu1`, 1 CPU, 4G
+- `soft_qc`: `cpu1`, 4 CPU, 16G
+- `ascat_prepare`: `cpu1`, 8 CPU, 32G
+- `ascat_run`: `cpu1`, 4 CPU, 16G
+- `sv_call_manta`: `cpu1`, 8 CPU, 32G
+- `sv_call_gridss`: `cpu2`, 16 CPU, 64G
+- `sv_postfilter`: `cpu1`, 2 CPU, 8G
+- `sv_merge`: `cpu1`, 2 CPU, 8G
+- `sv_annotation`: `cpu1`, 2 CPU, 8G
+- `hpv_link`: `cpu1`, 2 CPU, 8G
+- `cohort_summary`: `cpu1`, 4 CPU, 16G
+- `group_compare`: `cpu1`, 2 CPU, 8G
+- `final_report`: `cpu1`, 1 CPU, 4G, `00:30:00`
+
 ---
 
 ## 10. 输出结果说明
