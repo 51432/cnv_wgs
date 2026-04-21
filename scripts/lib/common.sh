@@ -22,6 +22,7 @@ ensure_log_dirs() {
 ensure_results_layout() {
   root="$1"
   ensure_dir "$root"
+  ensure_dir "$root/00.config"
   ensure_dir "$root/input_check"
   ensure_dir "$root/soft_qc"
   ensure_dir "$root/ascat_prepare"
@@ -36,6 +37,16 @@ ensure_results_layout() {
   ensure_dir "$root/group_compare"
   ensure_dir "$root/hpv_link"
   ensure_dir "$root/final_report"
+}
+
+snapshot_runtime_config() {
+  cfg="$1"
+  pairs="$2"
+  outdir="$3/00.config"
+  ensure_dir "$outdir"
+  ts=$(date '+%Y%m%d_%H%M%S')
+  cp "$cfg" "$outdir/config.${ts}.yaml"
+  cp "$pairs" "$outdir/pairbam.${ts}.tsv"
 }
 
 sample_count() {
@@ -61,9 +72,22 @@ mark_done() {
   done_file="$1"
   shift
   ts=$(date '+%Y-%m-%d %H:%M:%S')
+  stage_val=""
+  sample_val=""
   echo "status=done" > "$done_file"
   echo "timestamp=$ts" >> "$done_file"
   for kv in "$@"; do
     echo "$kv" >> "$done_file"
+    case "$kv" in
+      module=*) stage_val="${kv#module=}" ;;
+      stage=*) stage_val="${kv#stage=}" ;;
+      sample_id=*) sample_val="${kv#sample_id=}" ;;
+    esac
   done
+  if [ -n "$stage_val" ]; then
+    echo "stage=$stage_val" >> "$done_file"
+  fi
+  if [ -n "$sample_val" ]; then
+    echo "sample_id=$sample_val" >> "$done_file"
+  fi
 }

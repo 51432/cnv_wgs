@@ -1,52 +1,52 @@
 #!/usr/bin/env bash
 
-PIPELINE="all"
 PAIRS="examples/pairbam.example.tsv"
 GROUP="examples/group.example.tsv"
 HPV="examples/hpv_breakpoints.example.tsv"
-MODE="wgs"
 RESULTS_DIR="results"
 MAX_PARALLEL=2
-START_STAGE="input_check"
-END_STAGE="final_report"
-ENABLE_CONTAMINATION=0
-ENABLE_ORIENTATION=0
 ENABLE_ANNOTATION=1
 CONFIG="config/config.yaml.example"
+START_STAGE="input_check"
+END_STAGE="final_report"
+
+# repeatable: --max-parallel-stage stage=n
+STAGE_PARALLEL_ARGS=()
 
 usage() {
   cat <<'EOF'
 Usage:
   bash 01_submit_slurm_array.sh \
-    --pipeline all|phase1|phase2|phase3 \
     --pairs input/pairbam.tsv \
     --group input/group.tsv \
     --hpv-breakpoints input/hpv_breakpoints.tsv \
-    --mode wgs|wes \
-    --results-dir results \
+    --results-dir results_run \
     --max-parallel 2 \
+    --max-parallel-stage ascat_run=1 \
+    --max-parallel-stage sv_call_gridss=1 \
     --start-stage input_check \
     --end-stage final_report \
-    --enable-contamination 0|1 \
-    --enable-orientation 0|1 \
     --enable-annotation 0|1 \
     --config config/config.yaml
+
+Stage names:
+  input_check, soft_qc, ascat_prepare, ascat_run,
+  sv_call_manta, sv_call_gridss, sv_postfilter,
+  sv_merge, sv_annotation, hpv_link,
+  cohort_summary, group_compare, final_report
 EOF
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --pipeline) PIPELINE="$2"; shift 2 ;;
     --pairs) PAIRS="$2"; shift 2 ;;
     --group) GROUP="$2"; shift 2 ;;
     --hpv-breakpoints) HPV="$2"; shift 2 ;;
-    --mode) MODE="$2"; shift 2 ;;
     --results-dir) RESULTS_DIR="$2"; shift 2 ;;
     --max-parallel) MAX_PARALLEL="$2"; shift 2 ;;
+    --max-parallel-stage) STAGE_PARALLEL_ARGS+=("$2"); shift 2 ;;
     --start-stage) START_STAGE="$2"; shift 2 ;;
     --end-stage) END_STAGE="$2"; shift 2 ;;
-    --enable-contamination) ENABLE_CONTAMINATION="$2"; shift 2 ;;
-    --enable-orientation) ENABLE_ORIENTATION="$2"; shift 2 ;;
     --enable-annotation) ENABLE_ANNOTATION="$2"; shift 2 ;;
     --config) CONFIG="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -62,6 +62,13 @@ if [ ! -f "$PAIRS" ]; then
   echo "[error] pair file not found: $PAIRS"
   exit 1
 fi
+if [ ! -f "$CONFIG" ]; then
+  echo "[error] config file not found: $CONFIG"
+  exit 1
+fi
+
+snapshot_runtime_config "$CONFIG" "$PAIRS" "$RESULTS_DIR"
+
 N=$(sample_count "$PAIRS")
 if [ "$N" -lt 1 ]; then
   echo "[error] empty pair file"
@@ -69,38 +76,34 @@ if [ "$N" -lt 1 ]; then
 fi
 
 all_stages=(input_check soft_qc ascat_prepare ascat_run sv_call_manta sv_call_gridss sv_postfilter sv_merge sv_annotation hpv_link cohort_summary group_compare final_report)
-phase1=(input_check soft_qc ascat_prepare ascat_run sv_call_manta sv_call_gridss sv_postfilter sv_merge sv_annotation hpv_link)
-phase2=(cohort_summary group_compare)
-phase3=(final_report)
-
-normalize_stage(){
-  if [ "$1" = "filter" ]; then echo "sv_postfilter"; else echo "$1"; fi
-}
-START_STAGE=$(normalize_stage "$START_STAGE")
-END_STAGE=$(normalize_stage "$END_STAGE")
-
-if [ "$PIPELINE" = "phase1" ]; then
-  base=("${phase1[@]}")
-elif [ "$PIPELINE" = "phase2" ]; then
-  base=("${phase2[@]}")
-elif [ "$PIPELINE" = "phase3" ]; then
-  base=("${phase3[@]}")
-else
-  base=("${all_stages[@]}")
-fi
 
 selected=()
 active=0
-for s in "${base[@]}"; do
+for s in "${all_stages[@]}"; do
   if [ "$s" = "$START_STAGE" ]; then active=1; fi
   if [ "$active" -eq 1 ]; then selected+=("$s"); fi
   if [ "$s" = "$END_STAGE" ]; then break; fi
 done
-
 if [ ${#selected[@]} -eq 0 ]; then
   echo "[error] invalid stage window"
   exit 1
 fi
+
+declare -A STAGE_PARALLEL
+for kv in "${STAGE_PARALLEL_ARGS[@]}"; do
+  stage="${kv%%=*}"
+  val="${kv##*=}"
+  STAGE_PARALLEL[$stage]="$val"
+done
+
+stage_parallel() {
+  st="$1"
+  if [ -n "${STAGE_PARALLEL[$st]}" ]; then
+    echo "${STAGE_PARALLEL[$st]}"
+  else
+    echo "$MAX_PARALLEL"
+  fi
+}
 
 has_stage(){
   q="$1"
@@ -134,49 +137,56 @@ dep_join(){
   echo "$out"
 }
 
-echo "[info] mode=$MODE max_parallel=$MAX_PARALLEL stages=${selected[*]}"
+echo "[info] selected stages=${selected[*]}"
 
 after_input=""
-if has_stage input_check; then
-  submit_stage input_check "slurm/input_check.sbatch $PAIRS $CONFIG $RESULTS_DIR/input_check" ""
-  after_input="${JOBID[input_check]}"
-fi
+# always run input_check first; all later stages depend on it
+submit_stage input_check "slurm/input_check.sbatch $PAIRS $CONFIG $RESULTS_DIR/input_check" ""
+after_input="${JOBID[input_check]}"
 
 if has_stage soft_qc; then
-  submit_stage soft_qc "--array=1-$N%$MAX_PARALLEL slurm/soft_qc.sbatch $PAIRS $RESULTS_DIR/soft_qc" "$after_input"
+  p=$(stage_parallel soft_qc)
+  submit_stage soft_qc "--array=1-$N%$p slurm/soft_qc.sbatch $PAIRS $RESULTS_DIR/soft_qc" "$after_input"
 fi
 
 if has_stage ascat_prepare; then
-  submit_stage ascat_prepare "--array=1-$N%$MAX_PARALLEL slurm/ascat_prepare.sbatch $PAIRS $CONFIG $RESULTS_DIR/ascat_prepare" "$after_input"
+  p=$(stage_parallel ascat_prepare)
+  submit_stage ascat_prepare "--array=1-$N%$p slurm/ascat_prepare.sbatch $PAIRS $CONFIG $RESULTS_DIR/ascat_prepare" "$after_input"
 fi
 
 if has_stage ascat_run; then
-  d="${JOBID[ascat_prepare]}"
-  submit_stage ascat_run "--array=1-$N%$MAX_PARALLEL slurm/ascat_run.sbatch $PAIRS $CONFIG $RESULTS_DIR/ascat_prepare $RESULTS_DIR/ascat" "$d"
+  p=$(stage_parallel ascat_run)
+  d=$(dep_join "$after_input" "${JOBID[ascat_prepare]}")
+  submit_stage ascat_run "--array=1-$N%$p slurm/ascat_run.sbatch $PAIRS $CONFIG $RESULTS_DIR/ascat_prepare $RESULTS_DIR/ascat" "$d"
 fi
 
 if has_stage sv_call_manta; then
-  submit_stage sv_call_manta "--array=1-$N%$MAX_PARALLEL slurm/sv_call_manta.sbatch $PAIRS $CONFIG $RESULTS_DIR/sv/manta" "$after_input"
+  p=$(stage_parallel sv_call_manta)
+  submit_stage sv_call_manta "--array=1-$N%$p slurm/sv_call_manta.sbatch $PAIRS $CONFIG $RESULTS_DIR/sv/manta" "$after_input"
 fi
 
 if has_stage sv_call_gridss; then
-  submit_stage sv_call_gridss "--array=1-$N%$MAX_PARALLEL slurm/sv_call_gridss.sbatch $PAIRS $CONFIG $RESULTS_DIR/sv/gridss" "$after_input"
+  p=$(stage_parallel sv_call_gridss)
+  submit_stage sv_call_gridss "--array=1-$N%$p slurm/sv_call_gridss.sbatch $PAIRS $CONFIG $RESULTS_DIR/sv/gridss" "$after_input"
 fi
 
 if has_stage sv_postfilter; then
-  d=$(dep_join "${JOBID[sv_call_manta]}" "${JOBID[sv_call_gridss]}")
-  submit_stage sv_postfilter "--array=1-$N%$MAX_PARALLEL slurm/sv_postfilter.sbatch $PAIRS $RESULTS_DIR/sv/manta $RESULTS_DIR/sv/gridss $RESULTS_DIR/sv/postfilter" "$d"
+  p=$(stage_parallel sv_postfilter)
+  d=$(dep_join "$after_input" "${JOBID[sv_call_manta]}" "${JOBID[sv_call_gridss]}")
+  submit_stage sv_postfilter "--array=1-$N%$p slurm/sv_postfilter.sbatch $PAIRS $RESULTS_DIR/sv/manta $RESULTS_DIR/sv/gridss $RESULTS_DIR/sv/postfilter" "$d"
 fi
 
 if has_stage sv_merge; then
-  d="${JOBID[sv_postfilter]}"
-  submit_stage sv_merge "--array=1-$N%$MAX_PARALLEL slurm/sv_merge.sbatch $PAIRS $RESULTS_DIR/sv/postfilter $RESULTS_DIR/sv/merged" "$d"
+  p=$(stage_parallel sv_merge)
+  d=$(dep_join "$after_input" "${JOBID[sv_postfilter]}")
+  submit_stage sv_merge "--array=1-$N%$p slurm/sv_merge.sbatch $PAIRS $RESULTS_DIR/sv/postfilter $RESULTS_DIR/sv/merged" "$d"
 fi
 
 if has_stage sv_annotation; then
   if [ "$ENABLE_ANNOTATION" = "1" ]; then
-    d=$(dep_join "${JOBID[sv_merge]}" "${JOBID[ascat_run]}")
-    submit_stage sv_annotation "--array=1-$N%$MAX_PARALLEL slurm/sv_annotation.sbatch $PAIRS $RESULTS_DIR/sv/merged $RESULTS_DIR/ascat $HPV $RESULTS_DIR/sv/annotation" "$d"
+    p=$(stage_parallel sv_annotation)
+    d=$(dep_join "$after_input" "${JOBID[sv_merge]}" "${JOBID[ascat_run]}")
+    submit_stage sv_annotation "--array=1-$N%$p slurm/sv_annotation.sbatch $PAIRS $RESULTS_DIR/sv/merged $RESULTS_DIR/ascat $HPV $RESULTS_DIR/sv/annotation" "$d"
   else
     echo "[skip] sv_annotation (enable-annotation=0)"
   fi
@@ -184,21 +194,22 @@ fi
 
 if has_stage hpv_link; then
   if [ -f "$HPV" ]; then
-    d=$(dep_join "${JOBID[ascat_run]}" "${JOBID[sv_annotation]}")
-    submit_stage hpv_link "--array=1-$N%$MAX_PARALLEL slurm/hpv_link.sbatch $PAIRS $HPV $RESULTS_DIR/ascat $RESULTS_DIR/sv/annotation $RESULTS_DIR/hpv_link" "$d"
+    p=$(stage_parallel hpv_link)
+    d=$(dep_join "$after_input" "${JOBID[ascat_run]}" "${JOBID[sv_annotation]}")
+    submit_stage hpv_link "--array=1-$N%$p slurm/hpv_link.sbatch $PAIRS $HPV $RESULTS_DIR/ascat $RESULTS_DIR/sv/annotation $RESULTS_DIR/hpv_link" "$d"
   else
     echo "[skip] hpv_link (missing hpv breakpoints)"
   fi
 fi
 
 if has_stage cohort_summary; then
-  d=$(dep_join "${JOBID[ascat_run]}" "${JOBID[sv_annotation]}" "${JOBID[hpv_link]}")
+  d=$(dep_join "$after_input" "${JOBID[ascat_run]}" "${JOBID[sv_annotation]}")
   submit_stage cohort_summary "slurm/cohort_summary.sbatch $RESULTS_DIR/ascat $RESULTS_DIR/sv/annotation $RESULTS_DIR/cohort" "$d"
 fi
 
 if has_stage group_compare; then
   if [ -f "$GROUP" ]; then
-    d="${JOBID[cohort_summary]}"
+    d=$(dep_join "$after_input" "${JOBID[cohort_summary]}")
     if has_stage hpv_link; then
       d=$(dep_join "$d" "${JOBID[hpv_link]}")
     fi
@@ -209,7 +220,6 @@ if has_stage group_compare; then
 fi
 
 if has_stage final_report; then
-  d=$(dep_join "${JOBID[cohort_summary]}" "${JOBID[group_compare]}" "${JOBID[hpv_link]}")
+  d=$(dep_join "$after_input" "${JOBID[cohort_summary]}" "${JOBID[group_compare]}" "${JOBID[soft_qc]}")
   submit_stage final_report "slurm/final_report.sbatch $RESULTS_DIR $RESULTS_DIR/final_report" "$d"
 fi
-
