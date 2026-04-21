@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --partition=cpu1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=48G
+#SBATCH --mem=32G
 #SBATCH --time=12:00:00
 #SBATCH --job-name=ascat_prepare
 #SBATCH --output=logs/ascat_prepare/%A_%a.out

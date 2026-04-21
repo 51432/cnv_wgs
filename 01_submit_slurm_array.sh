@@ -255,7 +255,7 @@ fi
 
 if has_stage soft_qc; then
   p=$(stage_parallel soft_qc)
-  submit_stage soft_qc "--array=1-$N%$p slurm/soft_qc.sbatch $PAIRS $RESULTS_DIR/soft_qc" "$after_input"
+  submit_stage soft_qc "--array=1-$N%$p slurm/soft_qc.sbatch $PAIRS $CONFIG $RESULTS_DIR/soft_qc" "$after_input"
 fi
 
 if has_stage ascat_prepare; then
