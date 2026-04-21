@@ -384,7 +384,7 @@ bash 01_submit_slurm_array.sh \
 - `hpv_link`: `cpu1`, 2 CPU, 8G
 - `cohort_summary`: `cpu1`, 4 CPU, 16G
 - `group_compare`: `cpu1`, 2 CPU, 8G
-- `final_report`: `cpu1`, 1 CPU, 4G, `00:30:00`
+- `final_report`: `cpu1`, 1 CPU, 4G, `02:00:00`
 
 ---
 
