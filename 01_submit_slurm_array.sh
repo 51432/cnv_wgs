@@ -7,8 +7,10 @@ RESULTS_DIR="results"
 MAX_PARALLEL=2
 ENABLE_ANNOTATION=1
 CONFIG="config/config.yaml.example"
-START_STAGE="input_check"
-END_STAGE="final_report"
+PHASE="all"
+START_STAGE=""
+END_STAGE=""
+SKIP_INPUT_CHECK=0
 
 # repeatable: --max-parallel-stage stage=n
 STAGE_PARALLEL_ARGS=()
@@ -21,19 +23,21 @@ Usage:
     --group input/group.tsv \
     --hpv-breakpoints input/hpv_breakpoints.tsv \
     --results-dir results_run \
-    --max-parallel 2 \
-    --max-parallel-stage ascat_run=1 \
-    --max-parallel-stage sv_call_gridss=1 \
-    --start-stage input_check \
+    --phase precheck|sample|cohort|all \
+    --start-stage ascat_prepare \
     --end-stage final_report \
+    --max-parallel 2 \
+    --max-parallel-stage sv_call_gridss=1 \
     --enable-annotation 0|1 \
+    --skip-input-check 0|1 \
     --config config/config.yaml
 
-Stage names:
-  input_check, soft_qc, ascat_prepare, ascat_run,
-  sv_call_manta, sv_call_gridss, sv_postfilter,
-  sv_merge, sv_annotation, hpv_link,
-  cohort_summary, group_compare, final_report
+Phase:
+  precheck: input_check
+  sample:   soft_qc, ascat_prepare, ascat_run, sv_call_manta, sv_call_gridss,
+            sv_postfilter, sv_merge, sv_annotation, hpv_link
+  cohort:   cohort_summary, group_compare, final_report
+  all:      full DAG
 EOF
 }
 
@@ -43,11 +47,13 @@ while [ $# -gt 0 ]; do
     --group) GROUP="$2"; shift 2 ;;
     --hpv-breakpoints) HPV="$2"; shift 2 ;;
     --results-dir) RESULTS_DIR="$2"; shift 2 ;;
+    --phase) PHASE="$2"; shift 2 ;;
     --max-parallel) MAX_PARALLEL="$2"; shift 2 ;;
     --max-parallel-stage) STAGE_PARALLEL_ARGS+=("$2"); shift 2 ;;
     --start-stage) START_STAGE="$2"; shift 2 ;;
     --end-stage) END_STAGE="$2"; shift 2 ;;
     --enable-annotation) ENABLE_ANNOTATION="$2"; shift 2 ;;
+    --skip-input-check) SKIP_INPUT_CHECK="$2"; shift 2 ;;
     --config) CONFIG="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1"; usage; exit 1 ;;
@@ -66,7 +72,6 @@ if [ ! -f "$CONFIG" ]; then
   echo "[error] config file not found: $CONFIG"
   exit 1
 fi
-
 snapshot_runtime_config "$CONFIG" "$PAIRS" "$RESULTS_DIR"
 
 N=$(sample_count "$PAIRS")
@@ -76,16 +81,36 @@ if [ "$N" -lt 1 ]; then
 fi
 
 all_stages=(input_check soft_qc ascat_prepare ascat_run sv_call_manta sv_call_gridss sv_postfilter sv_merge sv_annotation hpv_link cohort_summary group_compare final_report)
+phase_precheck=(input_check)
+phase_sample=(soft_qc ascat_prepare ascat_run sv_call_manta sv_call_gridss sv_postfilter sv_merge sv_annotation hpv_link)
+phase_cohort=(cohort_summary group_compare final_report)
+
+if [ "$PHASE" = "precheck" ]; then
+  base=("${phase_precheck[@]}")
+elif [ "$PHASE" = "sample" ]; then
+  base=("${phase_sample[@]}")
+elif [ "$PHASE" = "cohort" ]; then
+  base=("${phase_cohort[@]}")
+else
+  base=("${all_stages[@]}")
+fi
+
+if [ -z "$START_STAGE" ]; then
+  START_STAGE="${base[0]}"
+fi
+if [ -z "$END_STAGE" ]; then
+  END_STAGE="${base[${#base[@]}-1]}"
+fi
 
 selected=()
 active=0
-for s in "${all_stages[@]}"; do
+for s in "${base[@]}"; do
   if [ "$s" = "$START_STAGE" ]; then active=1; fi
   if [ "$active" -eq 1 ]; then selected+=("$s"); fi
   if [ "$s" = "$END_STAGE" ]; then break; fi
 done
 if [ ${#selected[@]} -eq 0 ]; then
-  echo "[error] invalid stage window"
+  echo "[error] invalid stage window for phase=$PHASE start=$START_STAGE end=$END_STAGE"
   exit 1
 fi
 
@@ -137,12 +162,15 @@ dep_join(){
   echo "$out"
 }
 
-echo "[info] selected stages=${selected[*]}"
+echo "[info] phase=$PHASE selected stages=${selected[*]}"
 
 after_input=""
-# always run input_check first; all later stages depend on it
-submit_stage input_check "slurm/input_check.sbatch $PAIRS $CONFIG $RESULTS_DIR/input_check" ""
-after_input="${JOBID[input_check]}"
+if [ "$SKIP_INPUT_CHECK" = "0" ]; then
+  submit_stage input_check "slurm/input_check.sbatch $PAIRS $CONFIG $RESULTS_DIR/input_check" ""
+  after_input="${JOBID[input_check]}"
+else
+  echo "[warn] skip input_check enabled; you must ensure upstream compatibility manually."
+fi
 
 if has_stage soft_qc; then
   p=$(stage_parallel soft_qc)
@@ -198,7 +226,7 @@ if has_stage hpv_link; then
     d=$(dep_join "$after_input" "${JOBID[ascat_run]}" "${JOBID[sv_annotation]}")
     submit_stage hpv_link "--array=1-$N%$p slurm/hpv_link.sbatch $PAIRS $HPV $RESULTS_DIR/ascat $RESULTS_DIR/sv/annotation $RESULTS_DIR/hpv_link" "$d"
   else
-    echo "[skip] hpv_link (missing hpv breakpoints)"
+    echo "[auto-skip] hpv_link (missing hpv_breakpoints.tsv: $HPV)"
   fi
 fi
 
@@ -215,11 +243,11 @@ if has_stage group_compare; then
     fi
     submit_stage group_compare "slurm/group_compare.sbatch $GROUP $RESULTS_DIR/cohort $RESULTS_DIR/group_compare" "$d"
   else
-    echo "[skip] group_compare (missing group.tsv)"
+    echo "[auto-skip] group_compare (missing group.tsv: $GROUP)"
   fi
 fi
 
 if has_stage final_report; then
-  d=$(dep_join "$after_input" "${JOBID[cohort_summary]}" "${JOBID[group_compare]}" "${JOBID[soft_qc]}")
+  d=$(dep_join "$after_input" "${JOBID[cohort_summary]}" "${JOBID[soft_qc]}" "${JOBID[group_compare]}" "${JOBID[hpv_link]}")
   submit_stage final_report "slurm/final_report.sbatch $RESULTS_DIR $RESULTS_DIR/final_report" "$d"
 fi
