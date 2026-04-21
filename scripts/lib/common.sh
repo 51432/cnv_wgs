@@ -6,14 +6,36 @@ ensure_dir() {
   d="$1"
   if [ ! -d "$d" ]; then
     mkdir -p "$d"
+    echo "[mkdir] $d"
+  else
+    echo "[keep]  $d"
   fi
 }
 
 ensure_log_dirs() {
   ensure_dir "$PROJECT_ROOT/logs"
-  for d in input_check soft_qc ascat_prepare ascat manta gridss sv_postfilter sv_merge sv_annotation cohort_summary group_compare hpv_link report snv_indel_hook; do
+  for d in input_check soft_qc ascat_prepare ascat manta gridss sv_postfilter sv_merge sv_annotation cohort_summary group_compare hpv_link report snv_indel_hook submit; do
     ensure_dir "$PROJECT_ROOT/logs/$d"
   done
+}
+
+ensure_results_layout() {
+  root="$1"
+  ensure_dir "$root"
+  ensure_dir "$root/input_check"
+  ensure_dir "$root/soft_qc"
+  ensure_dir "$root/ascat_prepare"
+  ensure_dir "$root/ascat"
+  ensure_dir "$root/sv"
+  ensure_dir "$root/sv/manta"
+  ensure_dir "$root/sv/gridss"
+  ensure_dir "$root/sv/postfilter"
+  ensure_dir "$root/sv/merged"
+  ensure_dir "$root/sv/annotation"
+  ensure_dir "$root/cohort"
+  ensure_dir "$root/group_compare"
+  ensure_dir "$root/hpv_link"
+  ensure_dir "$root/final_report"
 }
 
 sample_count() {
@@ -45,4 +67,3 @@ mark_done() {
     echo "$kv" >> "$done_file"
   done
 }
-
