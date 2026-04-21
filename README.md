@@ -197,6 +197,9 @@ ID=0 chr15:-46006922 HPV39REF|lcl|Human:-6786 SUPPORTING_PAIRS=10 SPLIT_READS=0
 - 输出：`results/soft_qc/<sample>/soft_qc.summary.tsv`
 - 依赖：`input_check`
 - 功能：基础 QC 汇总（不硬停）
+  - reads/mapping/duplicate 指标来自 `samtools flagstat`
+  - 覆盖度使用**抽样窗口估计**（`samtools bedcov`），默认主染色体随机窗口；避免 `samtools depth -a` 全基因组逐位点扫描
+  - `summary.tsv` 额外记录 `coverage_method / n_windows / window_size` 便于追踪估计策略
 - array：是
 
 ### 7.3 ascat_prepare
@@ -359,6 +362,7 @@ bash 01_submit_slurm_array.sh \
 - `reference`：hg38 fasta / SNP VCF / access BED。
 - `parallel.max_parallel_default`：默认并发。
 - `modules.<stage>.slurm.*`：分模块资源策略（partition/cpu/mem/time/log）。
+- `qc.*`：`soft_qc` 覆盖度估计策略参数（`coverage_method`、`n_windows`、`window_size`、`include_chroms`），用于平衡速度与稳健性。
 - `hpv_link.windows_bp`：联动窗口。
 
 ### CPU 分区策略建议

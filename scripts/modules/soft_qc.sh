@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
 PAIR_TSV="$1"
-OUTDIR="$2"
-TASK_ID="${SLURM_ARRAY_TASK_ID:-$3}"
+CONFIG_YAML="$2"
+OUTDIR="$3"
+TASK_ID="${SLURM_ARRAY_TASK_ID:-$4}"
 SKIP_DONE="${SKIP_DONE:-true}"
 
 source "$(dirname "$0")/../lib/common.sh"
@@ -26,6 +27,7 @@ python3 "$(dirname "$0")/../python/soft_qc.py" \
   --sample-id "$sample_id" \
   --tumor-bam "$tumor_bam" \
   --normal-bam "$normal_bam" \
+  --config "$CONFIG_YAML" \
   --outdir "$sample_dir"
 rc=$?
 if [ $rc -ne 0 ]; then

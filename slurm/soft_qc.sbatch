@@ -7,4 +7,4 @@
 #SBATCH --output=logs/soft_qc/%A_%a.out
 #SBATCH --error=logs/soft_qc/%A_%a.err
 
-bash scripts/modules/soft_qc.sh "$1" "$2" "${SLURM_ARRAY_TASK_ID}"
+bash scripts/modules/soft_qc.sh "$1" "$2" "$3" "${SLURM_ARRAY_TASK_ID}"
