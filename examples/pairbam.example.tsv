@@ -1,0 +1,3 @@
+sample_id	tumor_bam	normal_bam
+TSDX001	/data/person/wup/public/liusy_files/sccc/preprocessed_bam/wgs/markdup_bam/TSDX001.markdup.bam	/data/person/wup/public/liusy_files/sccc/preprocessed_bam/wgs/markdup_bam/DSDX001.markdup.bam
+TSDX002	/data/person/wup/public/liusy_files/sccc/preprocessed_bam/wgs/markdup_bam/TSDX002.markdup.bam	/data/person/wup/public/liusy_files/sccc/preprocessed_bam/wgs/markdup_bam/DSDX002.markdup.bam

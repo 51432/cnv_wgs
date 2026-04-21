@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+
+PAIR_TSV="$1"
+OUTDIR="$2"
+TASK_ID="${SLURM_ARRAY_TASK_ID:-$3}"
+SKIP_DONE="${SKIP_DONE:-true}"
+
+source "$(dirname "$0")/../lib/common.sh"
+ensure_log_dirs
+ensure_dir "$OUTDIR"
+
+row=$(get_pair_by_task_id "$PAIR_TSV" "$TASK_ID")
+sample_id=$(echo "$row" | cut -f1)
+tumor_bam=$(echo "$row" | cut -f2)
+normal_bam=$(echo "$row" | cut -f3)
+
+sample_dir="$OUTDIR/$sample_id"
+ensure_dir "$sample_dir"
+
+if [ "$SKIP_DONE" = "true" ] && is_done "$sample_dir/.done"; then
+  echo "[soft_qc] skip done sample: $sample_id"
+  exit 0
+fi
+
+python3 "$(dirname "$0")/../python/soft_qc.py" \
+  --sample-id "$sample_id" \
+  --tumor-bam "$tumor_bam" \
+  --normal-bam "$normal_bam" \
+  --outdir "$sample_dir"
+rc=$?
+if [ $rc -ne 0 ]; then
+  echo "[soft_qc] failed for $sample_id"
+  exit $rc
+fi
+
+mark_done "$sample_dir/.done" "module=soft_qc" "sample_id=$sample_id"
