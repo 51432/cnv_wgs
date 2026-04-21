@@ -142,6 +142,11 @@ if [ "$PHASE" = "all" ] && [ "$GROUP_EXISTS" -ne 1 ]; then
   selected=("${filtered[@]}")
 fi
 
+if [ ${#selected[@]} -eq 0 ]; then
+  echo "[warn] no stages remain after optional-skip filtering, nothing to submit."
+  exit 0
+fi
+
 declare -A STAGE_PARALLEL
 for kv in "${STAGE_PARALLEL_ARGS[@]}"; do
   stage="${kv%%=*}"
@@ -164,6 +169,38 @@ has_stage(){
     if [ "$s" = "$q" ]; then return 0; fi
   done
   return 1
+}
+
+sample_done_exists() {
+  dir="$1"
+  missing=0
+  while IFS=$'\t' read -r sid _; do
+    if [ -z "$sid" ] || [ "$sid" = "sample_id" ]; then
+      continue
+    fi
+    if [ ! -f "$dir/$sid/.done" ]; then
+      echo "[error] missing upstream done: $dir/$sid/.done (required for rerun from middle stage)"
+      missing=1
+    fi
+  done < "$PAIRS"
+  [ "$missing" -eq 0 ]
+}
+
+require_stage_or_done() {
+  stage="$1"
+  upstream="$2"
+  done_type="$3"
+  done_path="$4"
+  if has_stage "$stage" && ! has_stage "$upstream"; then
+    if [ "$done_type" = "sample" ]; then
+      sample_done_exists "$done_path" || exit 1
+    else
+      if [ ! -f "$done_path" ]; then
+        echo "[error] missing upstream done: $done_path (required for rerun from middle stage)"
+        exit 1
+      fi
+    fi
+  fi
 }
 
 declare -A JOBID
@@ -191,6 +228,22 @@ dep_join(){
 }
 
 echo "[info] phase=$PHASE selected stages=${selected[*]}"
+
+# 中途重跑防护：若上游不在当前窗口，要求已有 done 标记
+require_stage_or_done ascat_run ascat_prepare sample "$RESULTS_DIR/ascat_prepare"
+require_stage_or_done sv_postfilter sv_call_manta sample "$RESULTS_DIR/sv/manta"
+require_stage_or_done sv_postfilter sv_call_gridss sample "$RESULTS_DIR/sv/gridss"
+require_stage_or_done sv_merge sv_postfilter sample "$RESULTS_DIR/sv/postfilter"
+require_stage_or_done sv_annotation sv_merge sample "$RESULTS_DIR/sv/merged"
+require_stage_or_done sv_annotation ascat_run sample "$RESULTS_DIR/ascat"
+if has_stage hpv_link && [ -f "$HPV" ]; then
+  require_stage_or_done hpv_link ascat_run sample "$RESULTS_DIR/ascat"
+  require_stage_or_done hpv_link sv_annotation sample "$RESULTS_DIR/sv/annotation"
+fi
+require_stage_or_done cohort_summary ascat_run sample "$RESULTS_DIR/ascat"
+require_stage_or_done cohort_summary sv_annotation sample "$RESULTS_DIR/sv/annotation"
+require_stage_or_done group_compare cohort_summary single "$RESULTS_DIR/cohort/.done"
+require_stage_or_done final_report cohort_summary single "$RESULTS_DIR/cohort/.done"
 
 after_input=""
 if [ "$SKIP_INPUT_CHECK" = "0" ]; then
