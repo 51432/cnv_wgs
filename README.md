@@ -245,7 +245,7 @@ ID=0 chr15:-46006922 HPV39REF|lcl|Human:-6786 SUPPORTING_PAIRS=10 SPLIT_READS=0
 - 输入：`merged.sv.tsv` + ascat 结果（+可选 HPV 位点）
 - 输出：`annotated.sv.tsv`
 - 依赖：`sv_merge + ascat_run`
-- 功能：基因/cytoband/SV type/邻近 CN breakpoint/邻近 HPV 位点注释
+- 功能：当前为**占位实现**，仅输出固定表头 + `NA` 结果，用于验证流程接口与依赖，不用于真实生物学注释结论
 - array：是
 
 ### 7.10 hpv_link
@@ -402,7 +402,10 @@ bash 01_submit_slurm_array.sh \
 
 ## 11. 可选输入缺失时的行为
 
-- 缺少 `group.tsv`：`group_compare` 自动跳过（不影响 cohort/final）。
+- 缺少 `group.tsv`：
+  - `--phase all`：自动跳过整个 cohort 阶段（`cohort_summary/group_compare/final_report`）。
+  - `--phase cohort`：报错退出。
+  - `--phase sample`：不受影响。
 - 缺少 `hpv_breakpoints.tsv`：`hpv_link` 自动跳过（不影响主 CNV/SV）。
 
 ---
@@ -412,6 +415,7 @@ bash 01_submit_slurm_array.sh \
 - 每个模块输出目录写入 `.done`。
 - `.done` 记录 `status/timestamp/stage/sample_id`。
 - 每次提交会将当前 `config` 与 `pairbam` 快照至 `results_dir/00.config/`。
+- 若用 `--start-stage/--end-stage` 从中间重跑，提交脚本会检查被截断上游的 `.done` 是否存在（样本级检查到每个 sample）；缺失时直接报错，避免“误跳过上游导致下游失败”。
 - 若担心旧结果复用：
   - 推荐新建 `results_dir`；或
   - 删除目标模块 `.done` 强制重跑。
@@ -441,6 +445,7 @@ bash 01_submit_slurm_array.sh \
 
 ### 当前版本
 - 已完成 phase+stage 控制、DAG 提交、array 框架、I/O 契约、可选模块自动跳过、断点续跑机制。
+- `sv_annotation` 仍为占位模块，因此当前 pipeline 可用于**提交框架与可运行性测试**，但不能用于验证真实注释生物学结果。
 
 ### 计划扩展
 - 将占位实现替换为真实生产命令（ASCAT/Manta/GRIDSS 参数细化）。
