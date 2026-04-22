@@ -124,13 +124,13 @@ ID=0 chr15:-46006922 HPV39REF|lcl|Human:-6786 SUPPORTING_PAIRS=10 SPLIT_READS=0
 默认 hg38 资源：
 
 - fasta：`/data/person/wup/public/liusy_files/reference_genomes/hg38/reference/Homo_sapiens_assembly38.fasta`
-- SNP VCF：`/data/person/wup/public/liusy_files/reference_genomes/hg38/resources/1000G_phase1.snps.high_confidence.hg38.vcf.gz`
+- ASCAT loci/alleles/GC 资源：统一放置在 `ascat_resources.root_dir`（正式环境建议：`/data/person/wup/public/liusy_files/reference_genomes/hg38/resources`）。
 - accessible BED：`/data/person/wup/public/liusy_files/reference_genomes/hg38/resources/access.hg38.bed`
 
 用途：
 
 - fasta：SV/CNV 坐标体系、染色体命名检查。
-- SNP VCF：ASCAT/BAF 信息构建。
+- ASCAT loci/alleles/GC：用于固定位点计数、normal 杂合筛选、tumor BAF 计算、GC 矫正 logR。
 - accessible BED：可访问区域过滤，避免低可比区域引入噪音。
 
 ---
@@ -189,7 +189,11 @@ ID=0 chr15:-46006922 HPV39REF|lcl|Human:-6786 SUPPORTING_PAIRS=10 SPLIT_READS=0
 - 输入：`pairbam.tsv`、`config.yaml`
 - 输出：`results/input_check/input_check.report.tsv`
 - 依赖：无
-- 功能：表头/唯一性/绝对路径/BAM+BAI/可读性/兼容性检查
+- 功能：表头/唯一性/绝对路径/BAM+BAI/可读性检查 + ASCAT 正式资源检查
+  - 自动探测或读取 `ascat_resources.{loci_path,alleles_path,gc_path}`
+  - 检查 loci/alleles/GC 文件存在性
+  - 检查 BAM 染色体命名与 ASCAT 资源 chr 风格一致性
+  - 在报告中写入资源识别结果（INFO 行）
 - array：否
 
 ### 7.2 soft_qc
@@ -203,14 +207,15 @@ ID=0 chr15:-46006922 HPV39REF|lcl|Human:-6786 SUPPORTING_PAIRS=10 SPLIT_READS=0
 - array：是
 
 ### 7.3 ascat_prepare
-- 输入：BAM + SNP VCF + access BED
-- 输出：`baf.tsv`、`logr.tsv`、prepare run_info
+- 输入：BAM + 固定 ASCAT 资源（loci/alleles/GC）
+- 输出：`baf.tsv`、`logr.tsv`、`ascat_prepare.run_info.tsv`
 - 依赖：`input_check`
-- 功能：生成 ASCAT 中间输入
-  - 优先支持 `ascat_prepare.site_bed` 指定位点列表（推荐正式运行）
-  - 无 `site_bed` 时，从 `snp_vcf` 按染色体均匀 reservoir 采样位点（避免仅取 VCF 前部位点）
-  - BAF 采用 `samtools mpileup` 的等位计数近似：先用 normal 筛选杂合位点，再用 tumor alt/ref 计数计算 BAF（proxy）
-  - logR 暂用 depth ratio 近似，并在 run_info 中明确标注 proxy 方法与阈值
+- 功能：按 nf-core/sarek 的 ASCAT/HTS 思路组织 ASCAT 预处理
+  - 不再从 `reference.snp_vcf` 抽样位点；直接使用固定 loci + alleles + GC 资源
+  - BAF：normal 先筛选高质量杂合位点，再用 tumor 在同位点的等位计数计算 BAF
+  - 计数优先 `alleleCounter`；若缺失或失败，自动 fallback 到 `samtools mpileup`
+  - logR：基于 tumor/normal depth ratio，并结合固定 GC 资源做线性 GC 矫正（不足时 fallback 到 raw ratio）
+  - `run_info` 明确记录 loci_path / alleles_path / gc_path / BAF 方法 / logR 方法 / 是否 fallback
 - array：是
 
 ### 7.4 ascat_run
@@ -363,11 +368,12 @@ bash 01_submit_slurm_array.sh \
 
 `config/config.yaml.example` 关键内容：
 
-- `reference`：hg38 fasta / SNP VCF / access BED。
+- `reference`：hg38 fasta / access BED（`snp_vcf` 可保留给其他模块，不再作为 ASCAT 正式主输入）。
+- `ascat_resources`：ASCAT 正式资源根目录与 loci/alleles/gc 路径、chr 风格、alleleCounter 可执行文件。
 - `parallel.max_parallel_default`：默认并发。
 - `modules.<stage>.slurm.*`：分模块资源策略（partition/cpu/mem/time/log）。
 - `qc.*`：`soft_qc` 覆盖度估计策略参数（`coverage_method`、`n_windows`、`window_size`、`include_chroms`），用于平衡速度与稳健性。
-- `ascat_prepare.*`：ASCAT 预处理参数（`max_sites`、`site_bed`、`min_normal_depth`、`min_tumor_depth`、`include_chroms`、normal het BAF 区间）。
+- `ascat_prepare.*`：ASCAT 预处理参数（`max_sites`、`min_normal_depth`、`min_tumor_depth`、`include_chroms`、normal het BAF 区间）。
 - `hpv_link.windows_bp`：联动窗口。
 
 ### CPU 分区策略建议
