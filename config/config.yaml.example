@@ -17,6 +17,15 @@ reference:
 parallel:
   max_parallel_default: 2
 
+
+ascat_resources:
+  root_dir: /data/person/wup/public/liusy_files/reference_genomes/hg38/resources
+  loci_path: ""        # 留空时自动探测（关键词 loci+hg38）
+  alleles_path: ""     # 留空时自动探测（关键词 alleles+hg38）
+  gc_path: ""          # 留空时自动探测（关键词 gc+hg38）
+  chr_style: chr
+  allelecounter_exe: alleleCounter
+
 runtime:
   skip_done: true
   create_done_flag: true
@@ -201,7 +210,6 @@ hpv_link:
 
 ascat_prepare:
   max_sites: 50000
-  site_bed: ""
   min_normal_depth: 12
   min_tumor_depth: 8
   include_chroms: [chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chr20,chr21,chr22,chrX,chrY]
