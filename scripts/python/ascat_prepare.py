@@ -7,12 +7,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections import defaultdict
 from pathlib import Path
 
 import yaml
 
 
-VALID_AUTOSOMES = {str(i) for i in range(1, 23)} | {"X", "Y", "M", "MT"}
+DEFAULT_CORE_CHROMS = [str(i) for i in range(1, 23)] + ["X"]
+EXTRA_CHROMS = {"Y", "M", "MT"}
+VALID_CHROMS = set(DEFAULT_CORE_CHROMS) | EXTRA_CHROMS
 
 
 def log(msg):
@@ -51,36 +54,20 @@ def load_yaml(path: Path) -> dict:
     return cfg
 
 
-def probe_resource_file(root_dir: Path, explicit_path: str, keywords: list[str], label: str) -> Path:
-    if explicit_path:
-        p = Path(explicit_path)
-        if not p.exists():
-            raise RuntimeError(f"ascat_resources.{label} not found: {p}")
-        return p
-
-    if not root_dir.exists():
-        raise RuntimeError(f"ascat_resources.root_dir not found: {root_dir}")
-
-    candidates = []
-    for p in root_dir.rglob("*"):
-        if not p.is_file():
-            continue
-        low = p.name.lower()
-        if low.endswith(".zip"):
-            continue
-        if all(k in low for k in keywords):
-            candidates.append(p)
-
-    if len(candidates) == 1:
-        return candidates[0]
-    if not candidates:
-        raise RuntimeError(
-            f"unable to auto-detect ascat_resources.{label} from root_dir={root_dir}; set explicit path in config"
-        )
-
-    candidates = sorted(candidates, key=lambda p: (len(p.name), str(p)))
-    log(f"multiple {label} candidates found, choosing shortest name: {candidates[0]}")
-    return candidates[0]
+def normalize_include_chroms(chroms: list[str], effective_style: str) -> list[str]:
+    out = []
+    for c in chroms:
+        core = norm_chr(str(c))
+        if core in VALID_CHROMS:
+            out.append(convert_chr_style(core, effective_style))
+    # preserve order, dedup
+    seen = set()
+    uniq = []
+    for c in out:
+        if c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    return uniq
 
 
 def parse_config(config_path: Path) -> dict:
@@ -95,29 +82,57 @@ def parse_config(config_path: Path) -> dict:
         raise RuntimeError("Missing required config: ascat_resources.root_dir")
     root_dir = Path(str(root_dir_v))
 
-    loci_path = probe_resource_file(root_dir, str(ascat_resources.get("loci_path", "") or ""), ["loci", "hg38"], "loci_path")
-    alleles_path = probe_resource_file(
-        root_dir, str(ascat_resources.get("alleles_path", "") or ""), ["alleles", "hg38"], "alleles_path"
-    )
-    gc_path = probe_resource_file(root_dir, str(ascat_resources.get("gc_path", "") or ""), ["gc", "hg38"], "gc_path")
+    loci_dir_v = ascat_resources.get("loci_dir") or ascat_resources.get("loci_path")
+    alleles_dir_v = ascat_resources.get("alleles_dir") or ascat_resources.get("alleles_path")
+    gc_path_v = ascat_resources.get("gc_path")
+
+    if not loci_dir_v or not alleles_dir_v or not gc_path_v:
+        raise RuntimeError(
+            "Missing resource path(s). Please provide ascat_resources.loci_dir, ascat_resources.alleles_dir and ascat_resources.gc_path"
+        )
+
+    loci_dir = Path(str(loci_dir_v))
+    alleles_dir = Path(str(alleles_dir_v))
+    gc_path = Path(str(gc_path_v))
+
+    if not loci_dir.exists() or not loci_dir.is_dir():
+        if loci_dir.exists() and loci_dir.is_file():
+            raise RuntimeError(
+                f"ascat_resources.loci_dir points to a file ({loci_dir}). Directory mode is required unless explicit one-file mode is enabled."
+            )
+        raise RuntimeError(f"loci_dir not found or not a directory: {loci_dir}")
+    if not alleles_dir.exists() or not alleles_dir.is_dir():
+        if alleles_dir.exists() and alleles_dir.is_file():
+            raise RuntimeError(
+                f"ascat_resources.alleles_dir points to a file ({alleles_dir}). Directory mode is required unless explicit one-file mode is enabled."
+            )
+        raise RuntimeError(f"alleles_dir not found or not a directory: {alleles_dir}")
+    if not gc_path.exists() or not gc_path.is_file():
+        raise RuntimeError(f"gc_path not found or not a file: {gc_path}")
 
     prep_cfg = cfg.get("ascat_prepare") or {}
+    max_sites = prep_cfg.get("max_sites")
+    max_sites = int(max_sites) if max_sites is not None else None
+
+    include_raw = prep_cfg.get("include_chroms")
+    if include_raw:
+        include_cores = [norm_chr(str(c)) for c in include_raw]
+    else:
+        include_cores = list(DEFAULT_CORE_CHROMS)
 
     return {
         "root_dir": root_dir,
-        "loci_path": loci_path,
-        "alleles_path": alleles_path,
+        "loci_dir": loci_dir,
+        "alleles_dir": alleles_dir,
         "gc_path": gc_path,
-        "chr_style": str(ascat_resources.get("chr_style", "chr")),
+        "gc_window": str(ascat_resources.get("gc_window", "1kb")),
         "allelecounter_exe": str(ascat_resources.get("allelecounter_exe", "alleleCounter") or "alleleCounter"),
         "min_normal_depth": int(prep_cfg.get("min_normal_depth", 12)),
         "min_tumor_depth": int(prep_cfg.get("min_tumor_depth", 8)),
         "normal_het_min_baf": float(prep_cfg.get("normal_het_min_baf", 0.30)),
         "normal_het_max_baf": float(prep_cfg.get("normal_het_max_baf", 0.70)),
-        "max_sites": int(prep_cfg.get("max_sites", 50000)),
-        "include_chroms": prep_cfg.get(
-            "include_chroms", [*(f"chr{i}" for i in range(1, 23)), "chrX", "chrY"]
-        ),
+        "max_sites": max_sites,
+        "include_chrom_cores": include_cores,
     }
 
 
@@ -136,51 +151,6 @@ def detect_bam_chr_style(bam_path: str) -> str:
     raise RuntimeError(f"Unable to determine chromosome style from bam: {bam_path}")
 
 
-def sniff_header(path: Path) -> tuple[bool, list[str]]:
-    with open_text(path) as fh:
-        for line in fh:
-            s = line.strip()
-            if not s or s.startswith("#"):
-                continue
-            cols = s.split("\t")
-            first = cols[0].lower()
-            if first in {"chr", "chrom", "chromosome", "contig"}:
-                return True, cols
-            if first.startswith("rs"):
-                return False, []
-            return False, []
-    return False, []
-
-
-def load_loci(loci_path: Path, target_style: str, include_chroms: list[str], max_sites: int):
-    include = {norm_chr(c) for c in include_chroms}
-    has_header, _ = sniff_header(loci_path)
-    rows = []
-    with open_text(loci_path) as fh:
-        for line in fh:
-            s = line.strip()
-            if not s or s.startswith("#"):
-                continue
-            cols = s.split("\t")
-            if has_header:
-                has_header = False
-                continue
-            if len(cols) < 2:
-                continue
-            chrom = cols[0]
-            try:
-                pos = int(cols[1])
-            except ValueError:
-                continue
-            ccore = norm_chr(chrom)
-            if ccore not in include or ccore not in VALID_AUTOSOMES:
-                continue
-            rows.append((convert_chr_style(chrom, target_style), pos))
-            if len(rows) >= max_sites:
-                break
-    return rows
-
-
 def find_col(header_map: dict, names: list[str]):
     for n in names:
         if n in header_map:
@@ -188,96 +158,274 @@ def find_col(header_map: dict, names: list[str]):
     return None
 
 
-def load_alleles(alleles_path: Path):
-    has_header, header = sniff_header(alleles_path)
-    allele_map = {}
+def is_chrom_file(name: str, chrom_core: str) -> bool:
+    low = name.lower()
+    c = chrom_core.lower()
+    return (f"chr{c}" in low) or (f"_{c}." in low) or low.endswith(f"_{c}")
 
-    with open_text(alleles_path) as fh:
-        if has_header:
-            h = header
-            header_map = {c.strip().lower(): i for i, c in enumerate(h)}
-            chr_i = find_col(header_map, ["chromosome", "chrom", "chr", "contig"])
-            pos_i = find_col(header_map, ["position", "pos"])
-            ref_i = find_col(header_map, ["ref", "ref_allele", "a", "allele_a"])
-            alt_i = find_col(header_map, ["alt", "alt_allele", "b", "allele_b"])
-            if None in {chr_i, pos_i, ref_i, alt_i}:
-                raise RuntimeError("Cannot parse alleles header; expected chr/pos/ref/alt columns")
 
-            next(fh)
-            for line in fh:
-                s = line.strip()
-                if not s or s.startswith("#"):
-                    continue
-                cols = s.split("\t")
-                if len(cols) <= max(chr_i, pos_i, ref_i, alt_i):
-                    continue
-                chrom = cols[chr_i]
-                try:
-                    pos = int(cols[pos_i])
-                except ValueError:
-                    continue
-                ref = cols[ref_i].upper()
-                alt = cols[alt_i].upper()
-                key = (norm_chr(chrom), pos)
-                allele_map[key] = (ref, alt)
+def list_resource_chrom_files(resource_dir: Path, kind: str, include_chrom_cores: list[str]) -> dict[str, Path]:
+    files = [p for p in resource_dir.iterdir() if p.is_file() and not p.name.startswith(".")]
+    out = {}
+    unmatched = []
+    for p in sorted(files):
+        matched = None
+        for core in include_chrom_cores:
+            if is_chrom_file(p.name, core):
+                matched = core
+                break
+        if matched:
+            out[matched] = p
         else:
-            for line in fh:
-                s = line.strip()
-                if not s or s.startswith("#"):
-                    continue
-                cols = s.split("\t")
-                if len(cols) < 4:
-                    continue
-                chrom = cols[0]
-                try:
-                    pos = int(cols[1])
-                except ValueError:
-                    continue
-                ref = cols[2].upper()
-                alt = cols[3].upper()
-                key = (norm_chr(chrom), pos)
-                allele_map[key] = (ref, alt)
+            unmatched.append(p.name)
+    if unmatched:
+        log(f"{kind}: files with unmatched chromosome token: {', '.join(unmatched[:20])}")
+    if len(out) < 10:
+        raise RuntimeError(
+            f"{kind} directory appears incomplete: matched chromosome files={len(out)} (<10). dir={resource_dir}"
+        )
+    return out
 
-    if not allele_map:
-        raise RuntimeError(f"No allele records parsed from: {alleles_path}")
+
+def sniff_file_chr_style(path: Path) -> str | None:
+    with open_text(path) as fh:
+        for line in fh:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            cols = s.split("\t")
+            if len(cols) < 2:
+                continue
+            if cols[0].lower() in {"chrom", "chromosome", "chr", "contig", "id"}:
+                continue
+            return infer_chr_style(cols[0])
+    return None
+
+
+def detect_resource_chr_style(loci_files: dict[str, Path], alleles_files: dict[str, Path], gc_path: Path) -> str:
+    styles = []
+    for d in (loci_files, alleles_files):
+        for p in d.values():
+            st = sniff_file_chr_style(p)
+            if st:
+                styles.append(st)
+                break
+    # GC_G1000_hg38 第一列通常是行ID，不能直接用于 chr 风格判定；此处仅在前两者都缺失时尝试。
+    if not styles:
+        with open_text(gc_path) as fh:
+            header = fh.readline().strip().split("\t")
+            hmap = {c.strip().lower(): i for i, c in enumerate(header)}
+            chr_i = find_col(hmap, ["chromosome", "chrom", "chr", "contig", "chrname"])
+            if chr_i is not None:
+                for line in fh:
+                    s = line.strip()
+                    if not s:
+                        continue
+                    cols = s.split("\t")
+                    if len(cols) <= chr_i:
+                        continue
+                    styles.append(infer_chr_style(cols[chr_i]))
+                    break
+    if not styles:
+        return "no_chr"
+    return "chr" if styles.count("chr") >= styles.count("no_chr") else "no_chr"
+
+
+def load_loci_one_file(path: Path, target_style: str, include_chrom_cores: set[str]) -> dict[str, list[int]]:
+    per_chr = defaultdict(list)
+    with open_text(path) as fh:
+        for line in fh:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            cols = s.split("\t")
+            if len(cols) < 2:
+                continue
+            if cols[0].lower() in {"chrom", "chromosome", "chr", "contig"}:
+                continue
+            try:
+                pos = int(cols[1])
+            except ValueError:
+                continue
+            core = norm_chr(cols[0])
+            if core not in include_chrom_cores:
+                continue
+            per_chr[convert_chr_style(core, target_style)].append(pos)
+    return per_chr
+
+
+def balanced_sample_loci(per_chr_positions: dict[str, list[int]], max_sites: int | None):
+    chroms = sorted(per_chr_positions)
+    total_requested = sum(len(v) for v in per_chr_positions.values())
+    if max_sites is None or total_requested <= max_sites:
+        kept = {c: sorted(v) for c, v in per_chr_positions.items()}
+        return kept, total_requested
+
+    remaining = max_sites
+    counts = {c: 0 for c in chroms}
+    available = {c: len(per_chr_positions[c]) for c in chroms}
+    alive = set(chroms)
+    while remaining > 0 and alive:
+        fair = max(1, remaining // len(alive))
+        done = set()
+        for c in sorted(alive):
+            take = min(fair, available[c] - counts[c])
+            counts[c] += take
+            remaining -= take
+            if counts[c] >= available[c]:
+                done.add(c)
+            if remaining == 0:
+                break
+        alive -= done
+        if fair == 0:
+            break
+
+    kept = {}
+    for c in chroms:
+        arr = sorted(per_chr_positions[c])
+        n = counts[c]
+        if n <= 0:
+            continue
+        if n >= len(arr):
+            kept[c] = arr
+            continue
+        step = len(arr) / n
+        idxs = [min(len(arr) - 1, int(i * step)) for i in range(n)]
+        kept[c] = [arr[i] for i in idxs]
+    return kept, total_requested
+
+
+def load_loci_dir(loci_dir: Path, target_style: str, include_chroms: list[str], max_sites: int | None):
+    include_cores = [norm_chr(c) for c in include_chroms]
+    loci_files = list_resource_chrom_files(loci_dir, "loci", include_cores)
+
+    per_chr_positions = defaultdict(list)
+    for core in include_cores:
+        p = loci_files.get(core)
+        if not p:
+            continue
+        loaded = load_loci_one_file(p, target_style, {core})
+        chrom = convert_chr_style(core, target_style)
+        per_chr_positions[chrom].extend(loaded.get(chrom, []))
+        log(f"loci loaded for {chrom}: {len(loaded.get(chrom, []))}")
+
+    kept_map, total_requested = balanced_sample_loci(per_chr_positions, max_sites)
+    for c in sorted(kept_map):
+        log(f"loci retained for {c}: {len(kept_map[c])}")
+
+    loci = []
+    for chrom in sorted(kept_map):
+        for pos in kept_map[chrom]:
+            loci.append((chrom, pos))
+    per_chr_retained = {c: len(v) for c, v in kept_map.items()}
+    return loci, loci_files, total_requested, per_chr_retained
+
+
+def parse_allele_line(cols: list[str], idx: tuple[int, int, int, int]):
+    chr_i, pos_i, ref_i, alt_i = idx
+    if len(cols) <= max(idx):
+        return None
+    try:
+        chrom = cols[chr_i]
+        pos = int(cols[pos_i])
+    except ValueError:
+        return None
+    ref = cols[ref_i].upper()
+    alt = cols[alt_i].upper()
+    if not ref or not alt:
+        return None
+    return norm_chr(chrom), pos, ref, alt
+
+
+def load_alleles_one_file(path: Path) -> dict:
+    allele_map = {}
+    with open_text(path) as fh:
+        first = fh.readline().strip().split("\t")
+        if first and first[0].lower() in {"chromosome", "chrom", "chr", "contig"}:
+            hmap = {c.strip().lower(): i for i, c in enumerate(first)}
+            idx = (
+                find_col(hmap, ["chromosome", "chrom", "chr", "contig"]),
+                find_col(hmap, ["position", "pos"]),
+                find_col(hmap, ["ref", "ref_allele", "a", "allele_a"]),
+                find_col(hmap, ["alt", "alt_allele", "b", "allele_b"]),
+            )
+            if None in idx:
+                raise RuntimeError(f"Cannot parse alleles header in {path}; expected chr/pos/ref/alt columns")
+        else:
+            idx = (0, 1, 2, 3)
+            row = parse_allele_line(first, idx)
+            if row:
+                allele_map[(row[0], row[1])] = (row[2], row[3])
+
+        for line in fh:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            row = parse_allele_line(s.split("\t"), idx)
+            if not row:
+                continue
+            allele_map[(row[0], row[1])] = (row[2], row[3])
     return allele_map
 
 
-def load_gc(gc_path: Path):
-    has_header, header = sniff_header(gc_path)
-    gc_map = {}
+def load_alleles_dir(alleles_dir: Path, include_chroms: list[str]):
+    include_cores = [norm_chr(c) for c in include_chroms]
+    allele_files = list_resource_chrom_files(alleles_dir, "alleles", include_cores)
+    allele_map = {}
+    for core in include_cores:
+        p = allele_files.get(core)
+        if not p:
+            continue
+        m = load_alleles_one_file(p)
+        allele_map.update(m)
+        log(f"alleles loaded for {core}: {len(m)}")
+    if not allele_map:
+        raise RuntimeError(f"No allele records parsed from directory: {alleles_dir}")
+    return allele_map, allele_files
 
+
+def load_gc(gc_path: Path, gc_window: str):
+    gc_map = {}
     with open_text(gc_path) as fh:
-        if has_header:
-            hmap = {c.strip().lower(): i for i, c in enumerate(header)}
-            chr_i = find_col(hmap, ["chromosome", "chrom", "chr", "contig"])
-            pos_i = find_col(hmap, ["position", "pos"])
-            gc_i = find_col(hmap, ["gc", "gc_content", "gcpct"])
-            if None in {chr_i, pos_i, gc_i}:
-                raise RuntimeError("Cannot parse gc header; expected chr/pos/gc columns")
-            next(fh)
-            for line in fh:
-                cols = line.strip().split("\t")
-                if len(cols) <= max(chr_i, pos_i, gc_i):
-                    continue
-                chrom = cols[chr_i]
-                try:
-                    pos = int(cols[pos_i])
-                    gc = float(cols[gc_i])
-                except ValueError:
-                    continue
-                gc_map[(norm_chr(chrom), pos)] = gc
-        else:
-            for line in fh:
-                cols = line.strip().split("\t")
-                if len(cols) < 3:
-                    continue
-                try:
-                    pos = int(cols[1])
-                    gc = float(cols[2])
-                except ValueError:
-                    continue
-                gc_map[(norm_chr(cols[0]), pos)] = gc
+        header = fh.readline().strip().split("\t")
+        if not header:
+            raise RuntimeError(f"GC file has empty header: {gc_path}")
+        hmap = {c.strip().lower(): i for i, c in enumerate(header)}
+
+        # Sarek/ASCAT 的 GC_G1000_hg38.txt 第一列常标记为 Chr，但实际是行ID（例如 1_809641）；
+        # 真正染色体与位置通常在后续列，需要按表头定位。
+        chr_i = find_col(hmap, ["chromosome", "chrom", "contig", "chrname"])
+        if chr_i is None:
+            if "chr" in hmap and hmap["chr"] > 0:
+                chr_i = hmap["chr"]
+            else:
+                raise RuntimeError("Cannot locate true chromosome column in GC table")
+        pos_i = find_col(hmap, ["position", "pos"])
+        if pos_i is None:
+            raise RuntimeError("Cannot locate Position column in GC table")
+
+        win_key = gc_window.lower()
+        if win_key not in hmap:
+            windows = [c for c in header if c.strip().lower() not in {"chr", "chrom", "chromosome", "contig", "position", "pos", "id"}]
+            raise RuntimeError(
+                f"Requested gc_window '{gc_window}' not found in GC table. Available windows: {', '.join(windows)}"
+            )
+        gc_i = hmap[win_key]
+
+        for line in fh:
+            s = line.strip()
+            if not s:
+                continue
+            cols = s.split("\t")
+            if len(cols) <= max(chr_i, pos_i, gc_i):
+                continue
+            try:
+                chrom = norm_chr(cols[chr_i])
+                pos = int(cols[pos_i])
+                gc = float(cols[gc_i])
+            except ValueError:
+                continue
+            gc_map[(chrom, pos)] = gc
 
     if not gc_map:
         raise RuntimeError(f"No gc records parsed from: {gc_path}")
@@ -318,60 +466,69 @@ def parse_pileup_bases(ref_base: str, bases: str):
     return counts
 
 
+def group_loci_by_chr(loci: list[tuple[str, int]]) -> dict[str, list[int]]:
+    out = defaultdict(list)
+    for chrom, pos in loci:
+        out[chrom].append(pos)
+    return out
+
+
 def run_mpileup_counts(tumor_bam: str, normal_bam: str, loci: list[tuple[str, int]], allele_map: dict):
     counts = {}
-    with tempfile.NamedTemporaryFile("w", suffix=".loci", delete=True) as lf:
-        for chrom, pos in loci:
-            lf.write(f"{chrom}\t{pos}\n")
-        lf.flush()
+    loci_by_chr = group_loci_by_chr(loci)
 
-        cmd = [
-            "samtools",
-            "mpileup",
-            "-aa",
-            "-A",
-            "-B",
-            "-Q",
-            "20",
-            "-q",
-            "20",
-            "-l",
-            lf.name,
-            normal_bam,
-            tumor_bam,
-        ]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            cols = line.rstrip("\n").split("\t")
-            if len(cols) < 9:
-                continue
-            chrom = cols[0]
-            try:
-                pos = int(cols[1])
-                n_dp = int(cols[3])
-                t_dp = int(cols[6])
-            except ValueError:
-                continue
-            key = (norm_chr(chrom), pos)
-            ref_alt = allele_map.get(key)
-            if not ref_alt:
-                continue
-            ref, alt = ref_alt
-            n_counts = parse_pileup_bases(ref, cols[4])
-            t_counts = parse_pileup_bases(ref, cols[7])
-            counts[key] = {
-                "normal_ref": n_counts.get(ref, 0),
-                "normal_alt": n_counts.get(alt, 0),
-                "tumor_ref": t_counts.get(ref, 0),
-                "tumor_alt": t_counts.get(alt, 0),
-                "normal_dp": n_dp,
-                "tumor_dp": t_dp,
-            }
-        stderr = proc.stderr.read() if proc.stderr else ""
-        rc = proc.wait()
-        if rc != 0:
-            raise RuntimeError(f"samtools mpileup failed (rc={rc}): {stderr.strip()}")
+    for chrom in sorted(loci_by_chr):
+        with tempfile.NamedTemporaryFile("w", suffix=f".{chrom}.loci", delete=True) as lf:
+            for pos in sorted(loci_by_chr[chrom]):
+                lf.write(f"{chrom}\t{pos}\n")
+            lf.flush()
+
+            cmd = [
+                "samtools",
+                "mpileup",
+                "-aa",
+                "-A",
+                "-B",
+                "-Q",
+                "20",
+                "-q",
+                "20",
+                "-l",
+                lf.name,
+                normal_bam,
+                tumor_bam,
+            ]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                cols = line.rstrip("\n").split("\t")
+                if len(cols) < 9:
+                    continue
+                try:
+                    pos = int(cols[1])
+                    n_dp = int(cols[3])
+                    t_dp = int(cols[6])
+                except ValueError:
+                    continue
+                key = (norm_chr(cols[0]), pos)
+                ref_alt = allele_map.get(key)
+                if not ref_alt:
+                    continue
+                ref, alt = ref_alt
+                n_counts = parse_pileup_bases(ref, cols[4])
+                t_counts = parse_pileup_bases(ref, cols[7])
+                counts[key] = {
+                    "normal_ref": n_counts.get(ref, 0),
+                    "normal_alt": n_counts.get(alt, 0),
+                    "tumor_ref": t_counts.get(ref, 0),
+                    "tumor_alt": t_counts.get(alt, 0),
+                    "normal_dp": n_dp,
+                    "tumor_dp": t_dp,
+                }
+            stderr = proc.stderr.read() if proc.stderr else ""
+            rc = proc.wait()
+            if rc != 0:
+                raise RuntimeError(f"samtools mpileup failed at {chrom} (rc={rc}): {' '.join(cmd)}\n{stderr.strip()}")
     return counts
 
 
@@ -379,15 +536,16 @@ def has_allelecounter(exe: str) -> bool:
     return shutil.which(exe) is not None
 
 
-def run_allelecounter_single(exe: str, bam: str, loci: list[tuple[str, int]], out_path: Path):
-    with tempfile.NamedTemporaryFile("w", suffix=".loci", delete=True) as lf:
-        for chrom, pos in loci:
+def run_allelecounter_single(exe: str, bam: str, chrom: str, loci_pos: list[int], out_path: Path):
+    # 按染色体分批运行，贴近 Sarek/ASCAT 按 chr 的资源组织，也便于定位失败染色体。
+    with tempfile.NamedTemporaryFile("w", suffix=f".{chrom}.loci", delete=True) as lf:
+        for pos in sorted(loci_pos):
             lf.write(f"{chrom}\t{pos}\n")
         lf.flush()
         cmd = [exe, "-b", bam, "-l", lf.name, "-o", str(out_path), "-q", "20", "-m", "20"]
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if r.returncode != 0:
-            raise RuntimeError(f"alleleCounter failed: {' '.join(cmd)}\n{r.stderr.strip()}")
+            raise RuntimeError(f"alleleCounter failed at {chrom}: {' '.join(cmd)}\n{r.stderr.strip()}")
 
 
 def parse_allelecounter_output(path: Path):
@@ -429,31 +587,36 @@ def parse_allelecounter_output(path: Path):
 
 
 def run_allelecounter_counts(exe: str, tumor_bam: str, normal_bam: str, loci: list[tuple[str, int]]):
-    with tempfile.TemporaryDirectory() as td:
-        n_out = Path(td) / "normal.tsv"
-        t_out = Path(td) / "tumor.tsv"
-        run_allelecounter_single(exe, normal_bam, loci, n_out)
-        run_allelecounter_single(exe, tumor_bam, loci, t_out)
-        n_counts = parse_allelecounter_output(n_out)
-        t_counts = parse_allelecounter_output(t_out)
-
     out = {}
-    keys = set(n_counts) | set(t_counts)
-    for k in keys:
-        nr, na = n_counts.get(k, (0, 0))
-        tr, ta = t_counts.get(k, (0, 0))
-        out[k] = {
-            "normal_ref": nr,
-            "normal_alt": na,
-            "tumor_ref": tr,
-            "tumor_alt": ta,
-            "normal_dp": nr + na,
-            "tumor_dp": tr + ta,
-        }
+    loci_by_chr = group_loci_by_chr(loci)
+
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        for chrom in sorted(loci_by_chr):
+            n_out = tdp / f"normal.{chrom}.tsv"
+            t_out = tdp / f"tumor.{chrom}.tsv"
+            run_allelecounter_single(exe, normal_bam, chrom, loci_by_chr[chrom], n_out)
+            run_allelecounter_single(exe, tumor_bam, chrom, loci_by_chr[chrom], t_out)
+            n_counts = parse_allelecounter_output(n_out)
+            t_counts = parse_allelecounter_output(t_out)
+            keys = set(n_counts) | set(t_counts)
+            for k in keys:
+                nr, na = n_counts.get(k, (0, 0))
+                tr, ta = t_counts.get(k, (0, 0))
+                out[k] = {
+                    "normal_ref": nr,
+                    "normal_alt": na,
+                    "tumor_ref": tr,
+                    "tumor_alt": ta,
+                    "normal_dp": nr + na,
+                    "tumor_dp": tr + ta,
+                }
     return out
 
 
 def linear_gc_correct(rows, gc_map):
+    # 轻量近似：logR 对 GC 做一元线性回归并残差中心化，
+    # 用于工程化替代，不等价于 ASCAT 官方 ascat.correctLogR()。
     xs = []
     ys = []
     for r in rows:
@@ -464,7 +627,7 @@ def linear_gc_correct(rows, gc_map):
         ys.append(r["raw_logr"])
 
     if len(xs) < 100:
-        return rows, "fallback_raw_logr(no_enough_gc_overlap)", True
+        return rows, f"fallback_raw_logr(no_enough_gc_overlap:{len(xs)}/{len(rows)})", True
 
     n = len(xs)
     sx = sum(xs)
@@ -546,7 +709,28 @@ def write_outputs(outdir: Path, rows):
             w.writerow([r["chr"], r["pos"], f"{r['logr']:.6f}"])
 
 
-def write_run_info(outdir: Path, sample_id: str, cfg: dict, loci_n: int, rows_n: int, baf_method: str, logr_method: str, fallback: bool):
+def summarize_per_chr_counts(loci: list[tuple[str, int]]) -> str:
+    d = defaultdict(int)
+    for c, _ in loci:
+        d[c] += 1
+    return ";".join(f"{c}:{d[c]}" for c in sorted(d))
+
+
+def write_run_info(
+    outdir: Path,
+    sample_id: str,
+    cfg: dict,
+    loci_n: int,
+    rows_n: int,
+    baf_method: str,
+    logr_method: str,
+    fallback: bool,
+    bam_chr_style: str,
+    resource_chr_style: str,
+    effective_chr_style: str,
+    n_sites_requested_total: int,
+    per_chr_counts_summary: str,
+):
     with (outdir / "ascat_prepare.run_info.tsv").open("w", newline="") as fh:
         w = csv.writer(fh, delimiter="\t")
         w.writerow(
@@ -554,11 +738,16 @@ def write_run_info(outdir: Path, sample_id: str, cfg: dict, loci_n: int, rows_n:
                 "sample_id",
                 "status",
                 "root_dir",
-                "loci_path",
-                "alleles_path",
+                "loci_dir",
+                "alleles_dir",
                 "gc_path",
-                "n_sites_requested",
-                "n_sites_retained",
+                "gc_window",
+                "bam_chr_style",
+                "resource_chr_style",
+                "effective_chr_style",
+                "n_sites_requested_total",
+                "n_sites_retained_total",
+                "per_chr_counts_summary",
                 "baf_method",
                 "logr_method",
                 "fallback",
@@ -574,11 +763,16 @@ def write_run_info(outdir: Path, sample_id: str, cfg: dict, loci_n: int, rows_n:
                 sample_id,
                 "ok" if rows_n > 0 else "empty",
                 str(cfg["root_dir"]),
-                str(cfg["loci_path"]),
-                str(cfg["alleles_path"]),
+                str(cfg["loci_dir"]),
+                str(cfg["alleles_dir"]),
                 str(cfg["gc_path"]),
+                str(cfg["gc_window"]),
+                bam_chr_style,
+                resource_chr_style,
+                effective_chr_style,
+                n_sites_requested_total,
                 loci_n,
-                rows_n,
+                per_chr_counts_summary,
                 baf_method,
                 logr_method,
                 "yes" if fallback else "no",
@@ -586,7 +780,7 @@ def write_run_info(outdir: Path, sample_id: str, cfg: dict, loci_n: int, rows_n:
                 cfg["min_tumor_depth"],
                 cfg["normal_het_min_baf"],
                 cfg["normal_het_max_baf"],
-                "Sarek/ASCAT-aligned scaffold: fixed loci/alleles/GC resources; normal-guided het selection; tumor BAF + depth-based logR",
+                "Sarek/ASCAT-aligned scaffold; GC correction is lightweight approximation (not ascat.correctLogR)",
             ]
         )
 
@@ -605,23 +799,42 @@ def main():
 
     cfg = parse_config(Path(args.config))
 
-    bam_style = detect_bam_chr_style(args.tumor_bam)
-    if cfg["chr_style"] not in {"chr", "no_chr"}:
-        raise RuntimeError("ascat_resources.chr_style must be chr or no_chr")
-    if bam_style != cfg["chr_style"]:
+    tumor_style = detect_bam_chr_style(args.tumor_bam)
+    normal_style = detect_bam_chr_style(args.normal_bam)
+    if tumor_style != normal_style:
         raise RuntimeError(
-            f"BAM chromosome style ({bam_style}) inconsistent with ascat_resources.chr_style ({cfg['chr_style']})"
+            f"Tumor/normal BAM chromosome styles differ: tumor={tumor_style}, normal={normal_style}"
         )
+    bam_style = tumor_style
 
-    loci = load_loci(cfg["loci_path"], cfg["chr_style"], cfg["include_chroms"], cfg["max_sites"])
+    effective_style = bam_style
+    include_chroms = normalize_include_chroms(cfg["include_chrom_cores"], effective_style)
+    if not include_chroms:
+        raise RuntimeError("No valid chromosomes in include_chroms after normalization")
+
+    log(f"resolved loci_dir={cfg['loci_dir']}")
+    log(f"resolved alleles_dir={cfg['alleles_dir']}")
+    log(f"resolved gc_path={cfg['gc_path']}")
+
+    loci, loci_files, n_sites_requested_total, per_chr_retained = load_loci_dir(
+        cfg["loci_dir"], effective_style, include_chroms, cfg["max_sites"]
+    )
     if not loci:
-        raise RuntimeError("No loci loaded from ascat_resources.loci_path")
-    log(f"loaded loci: {len(loci)}")
+        raise RuntimeError("No loci loaded from loci_dir")
 
-    allele_map = load_alleles(cfg["alleles_path"])
-    gc_map = load_gc(cfg["gc_path"])
-    log(f"loaded alleles: {len(allele_map)}")
-    log(f"loaded gc entries: {len(gc_map)}")
+    allele_map, allele_files = load_alleles_dir(cfg["alleles_dir"], include_chroms)
+    gc_map = load_gc(cfg["gc_path"], cfg["gc_window"])
+
+    resource_style = detect_resource_chr_style(loci_files, allele_files, cfg["gc_path"])
+    log(f"detected bam style={bam_style}, resource style={resource_style}, effective style={effective_style}")
+    log(f"loaded loci total(retained): {len(loci)}")
+    log(f"loaded alleles total: {len(allele_map)}")
+    log(f"loaded gc entries: {len(gc_map)} using window={cfg['gc_window']}")
+
+    locus_keys = {(norm_chr(c), p) for c, p in loci}
+    overlap = len(locus_keys & set(allele_map.keys()))
+    if overlap < max(1000, int(0.1 * len(locus_keys))):
+        log(f"WARNING: low loci/alleles overlap: {overlap}/{len(locus_keys)}")
 
     fallback = False
     baf_method = "alleleCounter_fixed_loci_with_normal_het_filter"
@@ -642,11 +855,30 @@ def main():
 
     rows = build_rows(loci, allele_map, counts, cfg)
     log(f"retained loci after filters: {len(rows)}")
+
+    gc_overlap = sum(1 for r in rows if (norm_chr(r["chr"]), r["pos"]) in gc_map)
+    if rows and gc_overlap < max(100, int(0.05 * len(rows))):
+        log(f"WARNING: low GC overlap before correction: {gc_overlap}/{len(rows)}")
+
     rows, logr_method, gc_fallback = linear_gc_correct(rows, gc_map)
     fallback = fallback or gc_fallback
 
     write_outputs(outdir, rows)
-    write_run_info(outdir, args.sample_id, cfg, len(loci), len(rows), baf_method, logr_method, fallback)
+    write_run_info(
+        outdir,
+        args.sample_id,
+        cfg,
+        len(loci),
+        len(rows),
+        baf_method,
+        logr_method,
+        fallback,
+        bam_style,
+        resource_style,
+        effective_style,
+        n_sites_requested_total,
+        summarize_per_chr_counts(loci),
+    )
 
 
 if __name__ == "__main__":
