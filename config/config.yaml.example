@@ -199,6 +199,15 @@ hpv_link:
   windows_bp: [10000, 100000, 1000000]
   chromosome_prefix_style: chr
 
+ascat_prepare:
+  max_sites: 50000
+  site_bed: ""
+  min_normal_depth: 12
+  min_tumor_depth: 8
+  include_chroms: [chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chr20,chr21,chr22,chrX,chrY]
+  normal_het_min_baf: 0.30
+  normal_het_max_baf: 0.70
+
 software:
   samtools: samtools
   bcftools: bcftools

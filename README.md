@@ -207,6 +207,10 @@ ID=0 chr15:-46006922 HPV39REF|lcl|Human:-6786 SUPPORTING_PAIRS=10 SPLIT_READS=0
 - 输出：`baf.tsv`、`logr.tsv`、prepare run_info
 - 依赖：`input_check`
 - 功能：生成 ASCAT 中间输入
+  - 优先支持 `ascat_prepare.site_bed` 指定位点列表（推荐正式运行）
+  - 无 `site_bed` 时，从 `snp_vcf` 按染色体均匀 reservoir 采样位点（避免仅取 VCF 前部位点）
+  - BAF 采用 `samtools mpileup` 的等位计数近似：先用 normal 筛选杂合位点，再用 tumor alt/ref 计数计算 BAF（proxy）
+  - logR 暂用 depth ratio 近似，并在 run_info 中明确标注 proxy 方法与阈值
 - array：是
 
 ### 7.4 ascat_run
@@ -363,6 +367,7 @@ bash 01_submit_slurm_array.sh \
 - `parallel.max_parallel_default`：默认并发。
 - `modules.<stage>.slurm.*`：分模块资源策略（partition/cpu/mem/time/log）。
 - `qc.*`：`soft_qc` 覆盖度估计策略参数（`coverage_method`、`n_windows`、`window_size`、`include_chroms`），用于平衡速度与稳健性。
+- `ascat_prepare.*`：ASCAT 预处理参数（`max_sites`、`site_bed`、`min_normal_depth`、`min_tumor_depth`、`include_chroms`、normal het BAF 区间）。
 - `hpv_link.windows_bp`：联动窗口。
 
 ### CPU 分区策略建议
